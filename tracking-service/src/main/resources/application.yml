@@ -1,0 +1,59 @@
+spring:
+  application:
+    name: tracking-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/parcelflow
+    username: parcelflow
+    password: parcelflow
+    hikari:
+      maximum-pool-size: 16
+      # Fail fast rather than letting request threads pile up on an unavailable database.
+      connection-timeout: 3000
+
+  jpa:
+    # Flyway owns the schema; Hibernate only verifies that entities match it.
+    hibernate:
+      ddl-auto: validate
+    # A request must not hold a database connection for the whole HTTP exchange.
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          batch_size: 25
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8080
+  error:
+    # Errors are produced by ApiExceptionHandler as problem+json; the servlet error page
+    # must not leak anything on the fallback path.
+    include-message: never
+    include-stacktrace: never
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  health:
+    probes:
+      enabled: true
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  level:
+    ca.vm.parcelflow: DEBUG

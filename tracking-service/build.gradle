@@ -1,0 +1,48 @@
+plugins {
+    id 'org.springframework.boot'
+    id 'io.spring.dependency-management'
+}
+
+description = 'ParcelFlow tracking service: shipment API and carrier event processor'
+
+ext {
+    springdocVersion = '3.1.0'
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-flyway'
+
+    // Flyway 10+ ships database support in per-vendor modules.
+    implementation 'org.flywaydb:flyway-database-postgresql'
+
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+    implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${springdocVersion}"
+
+    runtimeOnly 'org.postgresql:postgresql'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // Spring Boot 4 moved MockMvc test auto-configuration out of spring-boot-test-autoconfigure
+    // into a per-stack module.
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
+    testImplementation 'org.testcontainers:testcontainers-postgresql'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+/*
+ * Used by the Docker build to populate the Gradle cache in a layer that only depends on the build
+ * scripts. Without it, every source edit re-downloads the whole dependency graph.
+ */
+tasks.register('downloadDependencies') {
+    description = 'Resolves compile and runtime dependencies so Docker can cache them in a layer.'
+    group = 'build setup'
+    def classpaths = [configurations.compileClasspath, configurations.runtimeClasspath]
+    doLast {
+        classpaths.each { it.resolve() }
+    }
+}

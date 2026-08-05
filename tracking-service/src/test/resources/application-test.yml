@@ -1,0 +1,13 @@
+spring:
+  jpa:
+    hibernate:
+      # Still 'validate' in tests: a mismatch between a migration and an entity mapping should
+      # break the build, not be papered over by Hibernate creating the schema itself.
+      ddl-auto: validate
+    show-sql: false
+
+logging:
+  level:
+    ca.vm.parcelflow: DEBUG
+    org.testcontainers: INFO
+    com.github.dockerjava: WARN

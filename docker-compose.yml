@@ -1,0 +1,53 @@
+name: parcelflow
+
+# Stage 1 environment: PostgreSQL and the tracking service.
+# Redpanda and the carrier-simulator join in Stage 2, Redis in Stage 3.
+
+services:
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: parcelflow
+      POSTGRES_USER: parcelflow
+      POSTGRES_PASSWORD: parcelflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -U and -d are required: without them pg_isready reports ready during the
+      # brief window when the init scripts have not created the database yet.
+      test: [ "CMD-SHELL", "pg_isready -U parcelflow -d parcelflow" ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  tracking-service:
+    build:
+      context: .
+      dockerfile: tracking-service/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Spring relaxed binding maps these onto spring.datasource.*, overriding
+      # the localhost defaults in application.yml.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/parcelflow
+      SPRING_DATASOURCE_USERNAME: parcelflow
+      SPRING_DATASOURCE_PASSWORD: parcelflow
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Readiness, not liveness: this only reports healthy once Flyway has
+      # migrated and the datasource is answering.
+      test: [ "CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness" ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
