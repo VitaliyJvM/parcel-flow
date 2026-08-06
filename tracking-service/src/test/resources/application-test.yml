@@ -6,8 +6,30 @@ spring:
       ddl-auto: validate
     show-sql: false
 
+  kafka:
+    producer:
+      # Tests publish hand-written JSON strings rather than serializing a shared class. That
+      # exercises the real wire format — field names, date encoding, enum spelling — instead of
+      # letting a producer and consumer that share a class agree with each other by construction.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+    consumer:
+      # Each test class gets its own group so one test's committed offsets cannot hide another
+      # test's messages.
+      auto-offset-reset: earliest
+
+parcelflow:
+  kafka:
+    # Single-broker Redpanda container: a replication factor above 1 cannot be satisfied.
+    partitions: 1
+    replication-factor: 1
+
 logging:
   level:
     ca.vm.parcelflow: DEBUG
     org.testcontainers: INFO
     com.github.dockerjava: WARN
+    org.apache.kafka.clients: WARN
+    org.apache.kafka.common.utils.AppInfoParser: WARN
+    kafka: WARN

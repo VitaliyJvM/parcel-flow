@@ -7,9 +7,10 @@
 ./gradlew test
 ```
 
-Requires a running Docker daemon. Integration tests start a real PostgreSQL 17 container.
+Requires a running Docker daemon. Integration tests start real PostgreSQL 17 and Redpanda
+containers.
 
-**Stage 1: 35 tests, all passing.**
+**Stage 2: 109 tests, all passing** (35 from Stage 1, 74 added).
 
 ---
 
@@ -19,15 +20,26 @@ Requires a running Docker daemon. Integration tests start a real PostgreSQL 17 c
 behaviour. The Spring context is exercised as a side effect of tests that assert something real,
 which catches wiring breakage anyway.
 
-**No mocked database.** The unique constraint, the `@Version` increment, and `ddl-auto: validate`
-against the Flyway schema cannot be verified against an in-memory database or a mock repository.
-Those are precisely the behaviours the system depends on, so the tests use the real engine.
+**No mocked database, and no embedded broker.** The unique constraint, the `@Version` increment, and
+`ddl-auto: validate` against the Flyway schema cannot be verified against an in-memory database or a
+mock repository. Nor can partition assignment, consumer group formation, or the behaviour of the
+container's error handler be verified against a mock. Those are precisely the behaviours the system
+depends on, so the tests use the real engine and a real broker.
+
+**No `Thread.sleep`.** Asynchronous assertions use Awaitility with a bounded timeout. A sleep is
+either too short on a loaded machine or wasted time on a fast one.
+
+**Hand-written JSON on the wire.** The Kafka test publishes a literal JSON document rather than
+serializing the consumer's own record type. Serializing a shared class would let producer and
+consumer agree with each other by construction and prove nothing about the wire format; a literal
+document catches a renamed field, a changed date encoding, or an enum spelled differently.
 
 **One container per JVM.** `PostgresIntegrationTest` starts the container from a static initializer
 rather than through the `@Testcontainers` extension. The extension scopes a static `@Container` to a
 single test class, so every integration test class would pay a fresh container start. Starting it
 once per JVM means all classes share one, and Spring's context cache keeps the application context
-warm alongside it. Full suite runtime is roughly 20 seconds.
+warm alongside it. `KafkaIntegrationTest` extends it and adds Redpanda the same way, so only the
+tests that need a broker pay for one.
 
 **Fixed timestamps.** The domain takes `Instant` parameters instead of calling `Instant.now()`, so
 ordering tests assert against exact instants with no tolerance windows and no flakiness.
@@ -103,6 +115,93 @@ Guards the surfaces that break silently during dependency upgrades:
   earns its place: springdoc must stay compatible with Spring Boot 4's Jackson 3 default, and a
   version mismatch produces a `400` from that endpoint rather than a compilation error.
 
+### `CarrierEventNormalizerTest` — 30 tests, no Spring
+
+Parameterized over every code in both carrier vocabularies, in both directions:
+
+- Each of SwiftPost's eight codes maps to the expected status, and each of Pacifica's eight does too.
+- Every normalized status is reachable from some SwiftPost code — the mapping has no holes.
+- `DELIVERY_FAILED` is `DELIVERY_ATTEMPTED` and not terminal; `COMPLETE` is `DELIVERED`. Both are
+  cases no string transform would get right.
+- A Pacifica code offered to SwiftPost is rejected — vocabularies are not shared.
+- Casing and surrounding whitespace are tolerated; blank, null and invented codes are not.
+- The exception carries the carrier and the offending code, which Stage 3's dead letter record needs.
+
+### `CarrierEventNormalizersTest` — 6 tests
+
+Registry routing and misconfiguration:
+
+- Each carrier's code routes to that carrier's normalizer.
+- `NORDEX` and `METROLINK` — real `CarrierCode` values with no normalizer — produce
+  `UnsupportedCarrierException`, deliberately distinct from `UnknownCarrierEventTypeException`. One
+  is a configuration gap, the other is a message to investigate.
+- Two normalizers claiming one carrier fail at construction rather than resolving by bean-ordering
+  luck.
+
+### `TrackingEventProcessorIntegrationTest` — 13 tests, real PostgreSQL, no broker
+
+The pipeline driven directly. Bypassing Kafka is the point: none of these assertions are about
+transport, and the test runs in a fraction of a second as a result.
+
+| Case | Expected |
+|---|---|
+| valid event | stored with raw *and* normalized type, location, description, correlation id, `receivedAt` |
+| status update | shipment status, `lastEventTime`, `lastSequenceNumber` advance; `@Version` → 1 |
+| full journey | six SwiftPost scans walk the parcel to `DELIVERED` |
+| late event | stored as `SUPERSEDED`, with its own normalized reading; shipment does **not** rewind |
+| second carrier | Pacifica's vocabulary reaches the same normalized statuses |
+| unknown shipment | `ShipmentNotFoundException`, nothing written |
+| carrier mismatch | `CarrierMismatchException`, nothing written |
+| unknown event code | `UnknownCarrierEventTypeException`, nothing written, status unchanged |
+| unsupported carrier | `UnsupportedCarrierException`, nothing written |
+| `schemaVersion: 99` | `InvalidCarrierEventException` naming the schema version |
+| blank `correlationId` | `InvalidCarrierEventException` naming the field |
+| `sequenceNumber: 0` | rejected — a non-positive counter would break ordering comparisons |
+| absent optionals | `location` and `description` may be null |
+
+The "nothing written" assertions matter: they prove the transaction rolls back rather than leaving a
+history row for an event that was never applied.
+
+### `CarrierTrackingEventListenerIntegrationTest` — 3 tests, real Redpanda + PostgreSQL
+
+The transport path end to end, with Awaitility polling for the asynchronous result.
+
+- A JSON document published to the real topic is consumed, normalized, persisted with every field
+  intact, and moves the shipment to `OUT_FOR_DELIVERY`.
+- A five-event sequence keyed by shipment id walks the parcel to `DELIVERED` in order.
+- **A record the consumer cannot process does not stall the partition.** An event with an unknown
+  carrier code is published, then a valid one; the valid one still arrives. This is the property
+  that keeps a poison pill from halting ingestion for every parcel on that partition, and it is what
+  Stage 3 upgrades from "retried then dropped" to "dead-lettered with context".
+
+### `TrackingHistoryApiIntegrationTest` — 9 tests
+
+| Case | Expected |
+|---|---|
+| ingested 5, 1, 3 | returned 1, 3, 5 — insertion order does not leak into the response |
+| equal event times | tie-broken by sequence number |
+| entry shape | both `normalizedEventType` and `carrierEventType`, plus location, description, correlation id; internal `id` absent |
+| superseded events | present in history alongside applied ones, correctly labelled |
+| pagination | envelope counts correct across three pages, first and last entries right |
+| no events yet | `200` with an empty page, not a `404` |
+| unknown shipment | `404` `problem+json` carrying the id |
+| malformed id | `400` |
+| `size=5000` | `400` |
+
+### Simulator tests — 13 tests, no Spring
+
+- Every carrier's journey starts at label creation and ends at delivery, with a plausible gap
+  between scans.
+- The two carriers' vocabularies do not overlap — otherwise the simulator would not be testing
+  normalization at all.
+- Sequence numbers start at 1 and increase by one; event times are sorted and span more than a day,
+  ending at "now".
+- Event ids are unique, `schemaVersion` is 1, and the correlation id is shared across the run.
+- **Carrier-native codes are published, never normalized ones** — asserted explicitly, because a
+  simulator that emitted `LABEL_CREATED` would silently stop exercising the normalization layer.
+- Command-line parsing: defaults, every missing required argument named, unknown carrier rejected
+  *before* connecting to Kafka, malformed UUID / delay / scenario each reported with the input.
+
 ---
 
 ## Coverage against the brief
@@ -110,15 +209,19 @@ Guards the surfaces that break silently during dependency upgrades:
 | Required test | Status |
 |---|---|
 | Shipment status transition | ✅ `ShipmentTest` |
-| Out-of-order events | ✅ `ShipmentTest` (5 cases) |
-| PostgreSQL integration | ✅ `ShipmentPersistenceIntegrationTest` |
-| REST API | ✅ `ShipmentApiIntegrationTest` |
+| Out-of-order events | ✅ `ShipmentTest` (5 cases), `TrackingEventProcessorIntegrationTest` |
+| PostgreSQL integration | ✅ `ShipmentPersistenceIntegrationTest`, `TrackingEventProcessorIntegrationTest` |
+| REST API | ✅ `ShipmentApiIntegrationTest`, `TrackingHistoryApiIntegrationTest` |
+| Carrier event normalization | ✅ `CarrierEventNormalizerTest` (both carriers) |
+| Unsupported carrier / event type | ✅ `CarrierEventNormalizersTest` |
+| Successful event processing | ✅ `TrackingEventProcessorIntegrationTest` |
+| Shipment status update | ✅ `TrackingEventProcessorIntegrationTest` |
+| Tracking history ordering | ✅ `TrackingHistoryApiIntegrationTest` |
+| Kafka integration (Testcontainers) | ✅ `CarrierTrackingEventListenerIntegrationTest` |
 | Optimistic locking | ◐ `@Version` increment verified; the concurrent-conflict test lands in Stage 3 with the retry policy |
-| Carrier event normalization | Stage 2 |
 | Duplicate events | Stage 3 |
-| Invalid messages | Stage 3 |
+| Invalid messages (DLQ routing) | ◐ rejection and classification tested; dead-letter publication is Stage 3 |
 | Dead Letter Queue | Stage 3 |
-| Kafka integration (Testcontainers) | Stage 2 |
 | Redis integration | Stage 3 |
 
 ---

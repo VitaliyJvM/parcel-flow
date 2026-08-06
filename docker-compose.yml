@@ -1,7 +1,7 @@
 name: parcelflow
 
-# Stage 1 environment: PostgreSQL and the tracking service.
-# Redpanda and the carrier-simulator join in Stage 2, Redis in Stage 3.
+# Stage 2 environment: PostgreSQL, Redpanda, the tracking service and the carrier simulator.
+# Redis joins in Stage 3.
 
 services:
 
@@ -24,6 +24,32 @@ services:
       retries: 12
       start_period: 5s
 
+  redpanda:
+    image: redpandadata/redpanda:v25.1.1
+    command:
+      - redpanda
+      - start
+      - --mode dev-container
+      - --smp 1
+      - --default-log-level=info
+      # Two listeners because containers and the host reach the broker by different names.
+      # Kafka clients connect once to bootstrap, then reconnect to the addresses the broker
+      # advertises — so a single listener advertising 'redpanda' would be unreachable from the
+      # host, and one advertising 'localhost' would be unreachable from other containers.
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"   # Kafka API, from the host
+      - "9644:9644"     # Redpanda admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: [ "CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'" ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+
   tracking-service:
     build:
       context: .
@@ -31,12 +57,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redpanda:
+        condition: service_healthy
     environment:
-      # Spring relaxed binding maps these onto spring.datasource.*, overriding
-      # the localhost defaults in application.yml.
+      # Spring relaxed binding maps these onto spring.datasource.* and spring.kafka.*,
+      # overriding the localhost defaults in application.yml.
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/parcelflow
       SPRING_DATASOURCE_USERNAME: parcelflow
       SPRING_DATASOURCE_PASSWORD: parcelflow
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
     ports:
       - "8080:8080"
     healthcheck:
@@ -49,5 +78,23 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # A one-shot CLI, not a long-running service. It sits behind a profile so that
+  # `docker compose up` does not start it, run it to completion, and then restart it forever.
+  #
+  #   docker compose run --rm carrier-simulator \
+  #     --shipment-id=<uuid> --tracking-number=SP123456 --carrier=SWIFTPOST --scenario=NORMAL
+  carrier-simulator:
+    profiles: [ "simulator" ]
+    build:
+      context: .
+      dockerfile: carrier-simulator/Dockerfile
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    restart: "no"
+
 volumes:
   postgres-data:
+  redpanda-data:

@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: carrier-simulator
+  main:
+    banner-mode: off
+
+  kafka:
+    # Redpanda's external listener. Overridden to redpanda:9092 inside Docker Compose.
+    bootstrap-servers: localhost:19092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Jackson 3 serializer, matching Spring Boot 4's default Jackson.
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      # Wait for all in-sync replicas. A simulator does not need the durability, but publishing
+      # with acks=all means a send that returns has genuinely been accepted, so the CLI cannot
+      # report success for events the broker dropped.
+      acks: all
+      properties:
+        # Do not stamp the payload with this application's class name. The consumer pins the type
+        # it expects; advertising ours would be noise at best and a coupling at worst.
+        spring.json.add.type.headers: false
+
+parcelflow:
+  kafka:
+    carrier-tracking-events-topic: carrier-tracking-events
+
+logging:
+  level:
+    root: WARN
+    ca.vm.parcelflow.simulator: INFO
+    org.apache.kafka: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{0} - %msg%n"

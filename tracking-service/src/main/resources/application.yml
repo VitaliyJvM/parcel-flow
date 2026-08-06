@@ -27,6 +27,50 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  kafka:
+    # Redpanda's external listener. Overridden to redpanda:9092 inside Docker Compose.
+    bootstrap-servers: localhost:19092
+
+    consumer:
+      group-id: ${parcelflow.kafka.consumer-group}
+      # A new consumer group must not skip events that were published while the service was down.
+      auto-offset-reset: earliest
+      # Offsets are committed by the listener container after each record, not by the client on a
+      # timer, so a crash cannot acknowledge work that was never done.
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Wraps the JSON deserializer so a malformed payload becomes a failed record the container
+      # can handle, rather than an exception in the poll loop that stalls the partition forever.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: >-
+          org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        # Jackson 3 deserializer (Spring Boot 4's default Jackson). The Jackson 2 variant is
+        # org.springframework.kafka.support.serializer.JsonDeserializer.
+        spring.json.value.default.type: >-
+          ca.vm.parcelflow.tracking.messaging.CarrierTrackingEventMessage
+        # An explicit package, never a wildcard: trusting '*' lets a producer name any class on the
+        # classpath and have the deserializer instantiate it.
+        spring.json.trusted.packages: ca.vm.parcelflow.tracking.messaging
+        # Ignore producer type headers entirely. The producer is a carrier; what class it used is
+        # its business, and letting it choose ours is the deserialization gadget problem.
+        spring.json.use.type.headers: false
+
+    listener:
+      # Commit the offset after each record's listener method returns normally.
+      ack-mode: record
+      # One consumer thread in Stage 2. Multiple consumers are a Stage 3 concern, once processing
+      # is idempotent enough for a rebalance to be harmless.
+      concurrency: 1
+
+parcelflow:
+  kafka:
+    consumer-group: tracking-service
+    partitions: 3
+    replication-factor: 1
+    carrier-tracking-events-topic: carrier-tracking-events
+    carrier-tracking-events-dlt-topic: carrier-tracking-events-dlt
+
 server:
   port: 8080
   error:

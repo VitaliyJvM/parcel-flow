@@ -1,0 +1,30 @@
+plugins {
+    id 'org.springframework.boot'
+    id 'io.spring.dependency-management'
+}
+
+description = 'ParcelFlow carrier simulator: publishes synthetic carrier tracking events to Kafka'
+
+dependencies {
+    // No web starter: this is a command-line producer that exits when it is done.
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+    implementation 'org.springframework.boot:spring-boot-starter-json'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('bootJar') {
+    archiveFileName = 'carrier-simulator.jar'
+}
+
+/* Mirrors the tracking-service task; see the comment there. */
+tasks.register('downloadDependencies') {
+    description = 'Resolves compile and runtime dependencies so Docker can cache them in a layer.'
+    group = 'build setup'
+    def classpaths = [configurations.compileClasspath, configurations.runtimeClasspath]
+    doLast {
+        classpaths.each { it.resolve() }
+    }
+}

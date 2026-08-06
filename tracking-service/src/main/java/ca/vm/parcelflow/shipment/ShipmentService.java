@@ -50,6 +50,22 @@ public class ShipmentService {
                 .orElseThrow(() -> new ShipmentNotFoundException(shipmentId));
     }
 
+    /**
+     * Asserts a shipment exists without loading it.
+     *
+     * <p>For callers in other modules that need the 404 semantics but not the entity — returning
+     * the {@code Shipment} instead would leak the aggregate across a module boundary and pull a row
+     * nobody reads.
+     *
+     * @throws ShipmentNotFoundException if there is no such shipment
+     */
+    @Transactional(readOnly = true)
+    public void requireShipmentExists(UUID shipmentId) {
+        if (!shipmentRepository.existsById(shipmentId)) {
+            throw new ShipmentNotFoundException(shipmentId);
+        }
+    }
+
     @Transactional(readOnly = true)
     public Page<Shipment> findRetailerShipments(
             String retailerId, ShipmentStatus status, Pageable pageable) {
