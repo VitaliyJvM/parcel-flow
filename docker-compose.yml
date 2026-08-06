@@ -1,7 +1,6 @@
 name: parcelflow
 
-# Stage 2 environment: PostgreSQL, Redpanda, the tracking service and the carrier simulator.
-# Redis joins in Stage 3.
+# Stage 3 environment: PostgreSQL, Redpanda, Redis, the tracking service and the carrier simulator.
 
 services:
 
@@ -50,6 +49,21 @@ services:
       retries: 24
       start_period: 5s
 
+  redis:
+    image: redis:7-alpine
+    # No persistence: everything in here is a derived copy of a PostgreSQL row with a TTL. Writing
+    # an AOF or RDB would buy durability for data whose whole design assumption is that losing it
+    # costs one database read.
+    command: [ "redis-server", "--save", "", "--appendonly", "no" ]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
   tracking-service:
     build:
       context: .
@@ -59,6 +73,11 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+      # started, not healthy. The service is designed to run without Redis, so gating startup on
+      # the cache being up would contradict the design — and would turn a cache outage into an
+      # outage of the whole service, which is exactly what the fallback exists to prevent.
+      redis:
+        condition: service_started
     environment:
       # Spring relaxed binding maps these onto spring.datasource.* and spring.kafka.*,
       # overriding the localhost defaults in application.yml.
@@ -66,6 +85,8 @@ services:
       SPRING_DATASOURCE_USERNAME: parcelflow
       SPRING_DATASOURCE_PASSWORD: parcelflow
       SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
     ports:
       - "8080:8080"
     healthcheck:

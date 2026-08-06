@@ -64,10 +64,10 @@ public class CarrierSimulatorApplication implements ApplicationRunner, ExitCodeG
             return;
         }
 
-        log.info("Scenario={} carrier={} shipmentId={} trackingNumber={} delay={}ms correlationId={}",
-                request.scenario(), request.carrierCode(), request.shipmentId(),
-                request.trackingNumber(), request.delayBetweenEvents().toMillis(),
-                request.correlationId());
+        log.info("Scenario={} ({}) carrier={} shipmentId={} trackingNumber={} delay={}ms seed={}",
+                request.scenario(), request.scenario().description(), request.carrierCode(),
+                request.shipmentId(), request.trackingNumber(),
+                request.delayBetweenEvents().toMillis(), request.seed());
 
         try {
             publisher.publish(request);

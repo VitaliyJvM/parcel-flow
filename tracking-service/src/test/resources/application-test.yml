@@ -15,8 +15,6 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: all
     consumer:
-      # Each test class gets its own group so one test's committed offsets cannot hide another
-      # test's messages.
       auto-offset-reset: earliest
 
 parcelflow:
@@ -24,6 +22,25 @@ parcelflow:
     # Single-broker Redpanda container: a replication factor above 1 cannot be satisfied.
     partitions: 1
     replication-factor: 1
+  cache:
+    # Off by default so most tests need no Redis container — and, more usefully, so the whole suite
+    # doubles as the proof that the service is correct with the cache disabled. Tests that assert
+    # caching behaviour turn it back on and start a Redis container.
+    enabled: false
+  processing:
+    max-optimistic-lock-retries: 3
+    # Short backoff so DLT tests do not spend five seconds waiting for a retry budget to drain.
+    max-kafka-retries: 2
+    retry-initial-backoff: 50ms
+    retry-backoff-multiplier: 2.0
+    retry-max-backoff: 200ms
+    shipment-cache-ttl: 1m
+
+management:
+  health:
+    redis:
+      # Nothing to reach when the cache is disabled.
+      enabled: false
 
 logging:
   level:
@@ -33,3 +50,6 @@ logging:
     org.apache.kafka.clients: WARN
     org.apache.kafka.common.utils.AppInfoParser: WARN
     kafka: WARN
+    # The DLT tests deliberately provoke failures; the container logs each one at error level.
+    org.springframework.kafka.listener.DefaultErrorHandler: OFF
+    org.springframework.kafka.listener.DeadLetterPublishingRecoverer: TRACE

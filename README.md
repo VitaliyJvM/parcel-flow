@@ -19,20 +19,20 @@ Carrier names in this project (`SWIFTPOST`, `NORDEX`, `PACIFICA`, `METROLINK`) a
 | Stage | Scope | State |
 |-------|-------|-------|
 | **1** | Repo structure, Gradle build, Docker Compose, database schema, Shipment REST API, tests | ✅ Complete |
-| **2** | Kafka, carrier simulator, event consumer, normalization, tracking history | ✅ Complete — 109 tests passing |
-| 3 | Duplicate detection, out-of-order handling, retries, DLQ, notifications, Redis cache | Not started |
-| 4 | Metrics, structured logging, integration tests, performance test, final docs | Not started |
+| **2** | Kafka, carrier simulator, event consumer, normalization, tracking history | ✅ Complete |
+| **3** | Idempotency, out-of-order handling, retries, DLQ, notifications, Redis cache | ✅ Complete — 198 tests passing |
+| 4 | Metrics, structured logging, performance test, final docs | Not started |
 
-Stages 1–2 form a complete vertical slice: register a parcel over HTTP, have a carrier publish its
-own event codes to Kafka, watch them get normalized and applied to the shipment, and read the
-resulting status and full tracking history back over REST.
+Stages 1–3 form a complete, resilient vertical slice: register a parcel over HTTP, have a carrier
+publish its own event codes to Kafka, watch them get normalized and applied, and read the resulting
+status, history and notifications back over REST — while the pipeline absorbs duplicate deliveries,
+out-of-order arrival, concurrent updates, invalid payloads and a Redis outage.
 
 ---
 
 ## Architecture
 
-Target architecture across all four stages. Solid lines are implemented; dashed lines arrive in
-Stage 3.
+Everything below is implemented.
 
 ```mermaid
 flowchart LR
@@ -58,14 +58,14 @@ flowchart LR
     GEN --> T
     T --> CONS
     CONS --> NORM
-    CONS -.-> NOTIF
-    CONS -.->|"retries exhausted"| DLQ
+    CONS --> NOTIF
+    CONS -->|"retries exhausted"| DLQ
     CONS --> PG
-    CONS -.->|invalidate| RD
+    CONS -->|invalidate| RD
 
     Client(["Retailer / consumer"]) --> API
     API --> PG
-    API -.-> RD
+    API --> RD
 ```
 
 Deliberately **one** service, not many. Splitting shipment writes and event ingestion across
@@ -86,7 +86,7 @@ its own deployment.
 | Build | Gradle 9.5 multi-project, wrapper included |
 | Database | PostgreSQL 17, schema owned by Flyway |
 | Messaging | Redpanda (Kafka API), Spring Kafka 4 |
-| Cache | Redis — *Stage 3* |
+| Cache | Redis 7, via Spring Cache |
 | API docs | springdoc-openapi 3.1 (OpenAPI 3.1) |
 | Observability | Spring Boot Actuator + Micrometer / Prometheus |
 | Testing | JUnit 6, AssertJ, MockMvc, Awaitility, Testcontainers 2 |
@@ -125,9 +125,11 @@ docker compose down        # add -v to drop the database and broker volumes
 | Prometheus metrics | http://localhost:8080/actuator/prometheus |
 | PostgreSQL | `localhost:5432` — `parcelflow` / `parcelflow` / db `parcelflow` |
 | Kafka (Redpanda) | `localhost:19092` from the host, `redpanda:9092` between containers |
+| Redis | `localhost:6379` |
 
 `carrier-simulator` sits behind a Compose profile so `up` does not start it — it is a one-shot CLI.
-See the demo below.
+Because of that, `up --build` does **not** rebuild it; run `docker compose build carrier-simulator`
+after changing it. See the demo below.
 
 ### Locally against containerized infrastructure
 
@@ -177,6 +179,37 @@ curl -s http://localhost:8080/api/shipments/$SHIPMENT_ID/events
 
 Swap `--carrier=PACIFICA` (with a `PACIFICA` shipment) to watch a completely different carrier
 vocabulary — `MANIFESTED`, `COLLECTED`, `MOVING`, `COMPLETE` — normalize to the same statuses.
+
+### Demo: the pipeline misbehaving
+
+Every scenario is reproducible with `--seed`.
+
+```bash
+# Duplicate delivery — 12 messages published, 8 events stored, 3 notifications
+docker compose run --rm carrier-simulator --shipment-id=$ID --tracking-number=SP-D \
+  --carrier=SWIFTPOST --scenario=DUPLICATE --seed=7
+
+# Out-of-order arrival — full history preserved, no status regression
+docker compose run --rm carrier-simulator --shipment-id=$ID --tracking-number=SP-O \
+  --carrier=SWIFTPOST --scenario=OUT_OF_ORDER --seed=5
+
+# Invalid payload — one failed_events row, one dead letter, consumer keeps running
+docker compose run --rm carrier-simulator --shipment-id=$ID --tracking-number=SP-I \
+  --carrier=SWIFTPOST --scenario=INVALID_EVENT --seed=11
+
+curl -s 'http://localhost:8080/api/admin/failed-events'
+docker compose exec redpanda rpk topic consume carrier-tracking-events-dlt -n 1
+
+# Kill the cache — reads and ingestion keep working, readiness stays UP
+docker compose stop redis
+curl -s http://localhost:8080/api/shipments/$ID
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/actuator/health/readiness
+docker compose start redis
+```
+
+Scenarios: `NORMAL`, `DUPLICATE`, `OUT_OF_ORDER`, `INVALID_EVENT`, `UNKNOWN_CARRIER_EVENT`,
+`RAPID_CONCURRENT_EVENTS`. Full table in
+[docs/event-processing.md](docs/event-processing.md#10-running-the-simulator-scenarios).
 
 ---
 
@@ -297,7 +330,14 @@ history because they are real observations.
 | `GET` | `/api/retailers/{retailerId}/shipments` | 1 |
 | `GET` | `/api/shipments/{shipmentId}/events` | 2 |
 | `GET` | `/api/shipments/{shipmentId}/notifications` | 3 |
-| `POST` | `/api/admin/failed-events/{eventId}/retry` | 3 |
+| `GET` | `/api/admin/failed-events` | 3 |
+| `GET` | `/api/admin/failed-events/{id}` | 3 |
+| `POST` | `/api/admin/failed-events/{id}/retry` | 3 |
+
+The `/api/admin/**` subtree is **unauthenticated in this portfolio build**. It exposes failure detail
+across every retailer and can trigger reprocessing, so a real deployment needs it behind an operator
+role and off the public internet. The path prefix exists so the whole subtree can be secured with one
+rule.
 
 ---
 
@@ -305,7 +345,7 @@ history because they are real observations.
 
 | Challenge | Approach |
 |---|---|
-| **Duplicate events** | Unique constraint on `event_id` in PostgreSQL, not just consumer configuration. Kafka gives at-least-once delivery; a rebalance replays an uncommitted offset regardless of how the consumer is tuned, so the database has to be the last line of defence. Constraint in place from Stage 2; *application-side handling in Stage 3.* |
+| **Duplicate events** | A pre-check for the common redelivery, plus `UNIQUE (event_id)` for the race the pre-check cannot cover. Kafka is at-least-once; a rebalance replays an uncommitted offset however the consumer is tuned, so the database is the last line of defence. An in-memory set dies in exactly the crash that causes duplicates, and a Redis check has no atomicity with the write. A duplicate is a success, not a failure. |
 | **Out-of-order events** | Ordering authority is the carrier's per-shipment `sequenceNumber`, with `eventTime` as tie-breaker. A late event is still appended to history — marked `SUPERSEDED` — but does not move `currentStatus`. |
 | **Per-partition ordering** | Every event is keyed by shipment id, so one parcel's scans land on one partition and reach one consumer in production order. Ordering is guaranteed per parcel, never globally — which is exactly the guarantee the domain needs. |
 | **Carrier heterogeneity** | Each carrier's vocabulary is normalized by its own strategy bean, discovered through a registry. `DELIVERY_FAILED` → `DELIVERY_ATTEMPTED` and `COMPLETE` → `DELIVERED` show why this is not a string transform. |
@@ -314,9 +354,14 @@ history because they are real observations.
 | **Non-linear status** | Statuses are deliberately unranked. `DELAYED` and `DELIVERY_ATTEMPTED` are exception states that can occur at several points, and `ARRIVED_AT_FACILITY` repeats — an integer rank would encode a false model of a carrier network. |
 | **Terminal state** | `DELIVERED` is sticky, so a backfilled scan with a higher sequence number cannot un-deliver a parcel. |
 | **Concurrent updates** | JPA `@Version` optimistic locking on the shipment row. Two consumer threads handling events for the same parcel cannot silently lose an update; the loser retries the whole read-decide-write cycle. |
-| **Invalid events** | Bounded retries, then the Dead Letter Queue with enough error context to investigate. Permanently invalid messages are not retried forever. *(Stage 3)* |
-| **Cache coherence** | Redis caches the tracking response; PostgreSQL stays the source of truth and cache entries are invalidated when an event advances the shipment. *(Stage 3)* |
+| **Invalid events** | Non-retryable failures skip the backoff entirely and go straight to the dead letter topic with the origin metadata and a bounded error message — never a stack trace. |
+| **Cache coherence** | Redis caches the tracking response; PostgreSQL stays the source of truth. Eviction fires on `AFTER_COMMIT` — inside the transaction it would let a concurrent reader repopulate from pre-commit state. Superseded events do not evict. A TTL backstops any missed eviction. |
+| **Graceful degradation** | Every cache operation is best-effort and Redis is excluded from the readiness probe: a cache outage costs latency, never correctness. The cache can be disabled outright, which is how most of the test suite runs. |
 | **Duplicate registration race** | `POST /api/shipments` relies on the `(carrier_code, tracking_number)` unique constraint, not a `SELECT`-then-`INSERT` check that two concurrent requests could both pass. |
+| **Bounded retry** | Optimistic-lock conflicts retry a fixed number of times in a fresh transaction; Kafka-level retries use exponential backoff with jitter. Unbounded retry under contention is a livelock that eats a consumer thread. |
+| **Error classification** | Every failure maps to a category with two answers: retry automatically, and retry manually. Blanket-retrying `RuntimeException` spends the whole budget on payloads that can never succeed. One classifier feeds the error handler, the stored record and the admin API, so they cannot disagree. |
+| **Dead letter queue** | Exhausted and permanently-invalid records are written to `failed_events` **then** published to the DLT — if the broker is what is broken, losing the explanation too is strictly worse. Neither step may throw, or a poison record stops the consumer. |
+| **Transaction boundaries** | Duplicate detection, retry, failed-event persistence and cache eviction each sit deliberately *outside* the processing transaction; inside, each would be a bug. See [docs/architecture.md](docs/architecture.md#5-transaction-boundaries). |
 
 ---
 
@@ -333,26 +378,27 @@ history because they are real observations.
 
 Known limitations, stated plainly:
 
-- **Single consumer instance.** `concurrency: 1`. Partition-key correctness is implemented and the
-  topic has three partitions, but a rebalance across multiple instances is not yet exercised.
-- **No dead letter publication yet.** A record that cannot be processed is retried by the default
-  error handler and then dropped with a log line. The DLT topic exists but nothing writes to it.
+- **One consumer instance.** `concurrency: 3` gives a thread per partition within one instance.
+  Processing is idempotent enough for a rebalance to be safe, but that is argued rather than
+  demonstrated — there is no multi-instance rebalance test.
+- **`/api/admin/**` is unauthenticated.** Out of MVP scope. It exposes cross-retailer failure detail
+  and can trigger reprocessing.
 - **The event contract is declared twice**, once per module, deliberately — see
   [docs/event-processing.md](docs/event-processing.md#the-contract-is-not-a-shared-class). The two
-  copies must be kept in step by hand.
-- **No schema registry.** The carrier event contract is JSON validated at the edge. A registry with
-  Avro or Protobuf would catch producer-side breakage at publish time instead of consume time.
-- **`sequenceNumber` is trusted.** Real carriers sometimes omit or reset it; the fallback to
-  `eventTime` handles absence but not a reset.
-- **Notification records only.** Nothing is delivered to a real channel, by design.
-- **No authentication.** Out of MVP scope. A real deployment needs retailer-scoped authorization on
-  every endpoint, since `GET /api/retailers/{retailerId}/shipments` is otherwise a data leak.
-- **No tracing.** Metrics and structured logs (Stage 4) give aggregate visibility; OpenTelemetry
-  spans would give per-event causality.
+  copies are kept in step by hand; a schema registry is the real fix.
+- **No bulk DLT replay.** Retry is one event at a time through the admin API.
+- **`sequenceNumber` is trusted.** The fallback to `eventTime` handles a carrier omitting it, not a
+  carrier resetting it mid-journey.
+- **The third ordering tie-break depends on arrival order**, so two genuinely ambiguous events
+  replayed in the opposite order settle differently. Bounded by the `event_id` constraint, which
+  excludes exact replays.
+- **Notification records are never dispatched.** By design; nothing moves them out of `PENDING`.
+- **No tracing.** Counters exist in `TrackingEventMetrics`; exposing them, latency timers, DLQ depth
+  and structured JSON logging are Stage 4.
 
-Candidate next steps once the MVP is done: multiple consumer instances with a rebalance test, a
-schema registry, OpenTelemetry tracing, extracting `notification` into its own service, chaos
-testing of the broker and database, and a minimal React tracking page.
+Candidate next steps: multiple consumer instances with a rebalance test, a schema registry,
+OpenTelemetry tracing, extracting `notification` into its own service, chaos testing of the broker
+and database, and a minimal React tracking page.
 
 ---
 
@@ -369,13 +415,13 @@ parcel-flow/
 │   ├── build.gradle
 │   └── src/
 │       ├── main/java/ca/vm/parcelflow/
-│       │   ├── carrier/         # carrier codes; normalizers (Stage 2)
+│       │   ├── carrier/         # carrier codes and per-carrier normalizers
 │       │   ├── shipment/        # aggregate, service, REST API
-│       │   ├── tracking/        # event consumer, history (Stage 2)
-│       │   ├── notification/    # notification rules (Stage 3)
+│       │   ├── tracking/        # event consumer, history, error classification, failed events
+│       │   ├── notification/    # milestone rules and notification records
 │       │   ├── infrastructure/  # framework wiring
 │       │   └── shared/          # cross-module API concerns
 │       ├── main/resources/db/migration/
 │       └── test/java/ca/vm/parcelflow/
-└── carrier-simulator/           # Stage 2
+└── carrier-simulator/           # CLI producer with six reproducible scenarios
 ```

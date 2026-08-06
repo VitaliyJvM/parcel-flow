@@ -2,6 +2,7 @@ package ca.vm.parcelflow.shared.api;
 
 import ca.vm.parcelflow.shipment.DuplicateTrackingNumberException;
 import ca.vm.parcelflow.shipment.ShipmentNotFoundException;
+import ca.vm.parcelflow.tracking.failure.FailedEventExceptions;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.net.URI;
@@ -16,6 +17,7 @@ import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -58,12 +60,41 @@ public class ApiExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(FailedEventExceptions.NotFound.class)
+    public ProblemDetail handleFailedEventNotFound(FailedEventExceptions.NotFound e) {
+        ProblemDetail problem = problem(HttpStatus.NOT_FOUND, "Failed event not found",
+                e.getMessage(), "failed-event-not-found");
+        problem.setProperty("failedEventId", e.getFailedEventId().toString());
+        return problem;
+    }
+
+    /**
+     * The event's failure can never be fixed by reprocessing the same bytes. 409 rather than 400:
+     * the request is well-formed, the resource is simply not in a state that allows the action.
+     */
+    @ExceptionHandler(FailedEventExceptions.NotRetryable.class)
+    public ProblemDetail handleFailedEventNotRetryable(FailedEventExceptions.NotRetryable e) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT, "Failed event is not retryable",
+                e.getMessage(), "failed-event-not-retryable");
+        problem.setProperty("errorCategory", e.getErrorCategory().name());
+        return problem;
+    }
+
+    /** Another retry already claimed the record, or it is already resolved. */
+    @ExceptionHandler(FailedEventExceptions.RetryNotAvailable.class)
+    public ProblemDetail handleRetryNotAvailable(FailedEventExceptions.RetryNotAvailable e) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT, "Retry not available",
+                e.getMessage(), "failed-event-retry-not-available");
+        problem.setProperty("status", e.getStatus().name());
+        return problem;
+    }
+
     /** Bean validation failure on an {@code @Valid @RequestBody} argument. */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ProblemDetail handleInvalidRequestBody(MethodArgumentNotValidException e) {
         Map<String, String> errors = new LinkedHashMap<>();
         e.getBindingResult().getFieldErrors().stream()
-                .sorted(Comparator.comparing(fieldError -> fieldError.getField()))
+                .sorted(Comparator.comparing(FieldError::getField))
                 .forEach(fieldError -> errors.putIfAbsent(
                         fieldError.getField(),
                         fieldError.getDefaultMessage() == null
