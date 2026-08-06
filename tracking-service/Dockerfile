@@ -6,7 +6,10 @@ WORKDIR /workspace
 # distribution download and the dependency cache below survive code edits.
 COPY gradlew settings.gradle build.gradle ./
 COPY gradle gradle
+# Both module build scripts: settings.gradle includes carrier-simulator, so Gradle needs its
+# script present to configure the build even when only this module is being built.
 COPY tracking-service/build.gradle tracking-service/build.gradle
+COPY carrier-simulator/build.gradle carrier-simulator/build.gradle
 RUN ./gradlew --no-daemon :tracking-service:downloadDependencies
 
 COPY tracking-service/src tracking-service/src

@@ -3,8 +3,10 @@
 > ParcelFlow is an independent portfolio and training project. It is not affiliated with or based on
 > proprietary systems from any delivery carriers or ecommerce retailers.
 
-This document covers what exists after Stage 1 and the decisions behind it. Sections marked
+This document covers what exists after Stage 2 and the decisions behind it. Sections marked
 *(planned)* describe committed design that later stages implement.
+
+The event pipeline has its own document: [event-processing.md](event-processing.md).
 
 ---
 
@@ -14,8 +16,8 @@ Two deployables:
 
 | Application | Role |
 |---|---|
-| **tracking-service** | Modular monolith. Owns the shipment REST API and, from Stage 2, the carrier event consumer. |
-| **carrier-simulator** | Command-line producer that publishes synthetic carrier events, including deliberately broken ones. *(Stage 2)* |
+| **tracking-service** | Modular monolith. Owns the shipment REST API and the carrier event consumer. |
+| **carrier-simulator** | Command-line producer that publishes synthetic carrier events. Broken-event scenarios arrive in Stage 3. |
 
 ### Why one service and not several
 
@@ -33,10 +35,14 @@ honest by package structure and by never letting a controller reach into another
 ```
 ca.vm.parcelflow
 ├── shipment        the aggregate: entity, repository, service, REST API
-├── tracking        carrier event ingestion and tracking history        (Stage 2)
-├── carrier         carrier codes and per-carrier event normalizers     (Stage 2)
+├── tracking        carrier event ingestion, history, and the events endpoint
+│   ├── domain          TrackingEvent, EventProcessingStatus
+│   ├── messaging       Kafka listener and the wire contract
+│   └── api             tracking history REST
+├── carrier         carrier codes and per-carrier event normalizers
+│   └── normalization   one strategy per carrier, plus the registry
 ├── notification    milestone rules and notification records            (Stage 3)
-├── infrastructure  framework wiring: Clock, OpenAPI, Kafka, Redis config
+├── infrastructure  framework wiring: Clock, OpenAPI, Kafka topics
 └── shared          cross-module API concerns: error handling, paging
 ```
 
@@ -81,10 +87,41 @@ row read instead of a query against tracking history.
 **Enums stored as strings.** `@Enumerated(EnumType.STRING)` throughout. Ordinals break the moment
 someone inserts a constant in the middle of the enum, and they make the table unreadable in `psql`.
 
-### `tracking_events` *(planned, Stage 2)*
+### `tracking_events` — implemented
 
-Append-only history. `event_id` carries a unique constraint — the database-level idempotency
-guarantee. Every event lands here, including ones too old to change `current_status`.
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `BIGINT` identity | Surrogate PK. Narrow and monotonic, for an append-only table. |
+| `event_id` | `UUID` | The carrier's id. `UNIQUE` — the database-level idempotency guarantee. |
+| `shipment_id` | `UUID` | FK to `shipments`, `ON DELETE CASCADE`. |
+| `tracking_number` | `VARCHAR(128)` | Denormalized; see below. |
+| `carrier_code` | `VARCHAR(32)` | |
+| `carrier_event_type` | `VARCHAR(64)` | The carrier's own code, as received. |
+| `normalized_event_type` | `VARCHAR(32)` | ParcelFlow's reading of it. |
+| `event_time` / `received_at` | `TIMESTAMPTZ` | Observed by the carrier / ingested by us. |
+| `sequence_number` | `BIGINT` | The carrier's per-shipment counter. |
+| `location` / `description` | text | Optional, free text. |
+| `correlation_id` | `VARCHAR(64)` | Propagated from the producer. |
+| `processing_status` | `VARCHAR(32)` | `APPLIED` or `SUPERSEDED`. |
+
+Append-only and immutable: the entity has no setters and nothing updates a stored row. An event is a
+statement about the past, so correcting one would mean rewriting history rather than appending to it.
+
+**Why both event types are stored.** The normalized value drives the API and the shipment state; the
+raw value is what makes a support conversation with the carrier possible, and what allows a mapping
+bug to be re-run against stored history instead of lost.
+
+**Why `tracking_number` is denormalized.** Carrier support queries arrive as "what happened to
+SP123456?". Storing the number the carrier itself used means the lookup needs no join and still
+works if the shipment record is later corrected.
+
+**Why `shipment_id` is a plain UUID, not `@ManyToOne`.** An association would add lazy loading and
+cascade semantics to an append-only table for no gain: the write path already holds the `Shipment`
+it needs, and the read path never navigates back.
+
+Indexes: `(shipment_id, event_time, sequence_number)` for the history endpoint including its sort,
+`(tracking_number, event_time)` for support lookups, `(received_at DESC)` for operational queries
+over the recent ingest stream.
 
 ### `notifications` *(planned, Stage 3)*
 
@@ -170,6 +207,15 @@ One detail worth pointing out: `registerShipment` uses `saveAndFlush`, not `save
 constraint violation would surface outside the `try` block and the client would get a `500` instead
 of a `409`. Flushing inside the transaction puts the exception where it can be translated.
 
+Event ingestion has its own boundary in `TrackingEventProcessor.process`, which is one transaction
+covering the history insert and the shipment update together. There is no window in which a parcel
+shows a status that no stored event justifies. Both writes target the same database, so this needs
+no distributed coordination — the concrete payoff of the single-service decision in section 1.
+
+The shipment is a managed entity inside that transaction, so `recordEvent` flushes on commit under
+`@Version` guard. There is no explicit `save` call for it and therefore no second write path to keep
+in sync.
+
 ---
 
 ## 6. API design
@@ -189,6 +235,12 @@ of a `409`. Flushing inside the transaction puts the exception where it can be t
 - **Immutable records** for every DTO.
 - **Injected `Clock`.** Nothing in the domain calls `Instant.now()`, so ordering behaviour is
   testable at exact timestamps.
+- **Both readings exposed.** A tracking history entry carries `normalizedEventType` *and*
+  `carrierEventType`, so a consumer can render the normalized value while a support engineer sees
+  the raw scan. The internal surrogate key is not exposed — `eventId` is the identifier that means
+  something outside the process.
+- **Fixed ordering on history.** The events endpoint does not accept a sort parameter. The order is
+  part of what the endpoint means, and the composite index is built for exactly that order.
 
 ---
 
@@ -198,9 +250,10 @@ Flyway owns the schema; Hibernate runs with `ddl-auto: validate` in both product
 mismatch between a migration and an entity mapping fails at startup rather than being silently
 papered over by `ddl-auto: update`.
 
-Migrations are added incrementally per stage (`V1__create_shipments.sql` now, `tracking_events` in
-Stage 2, `notifications` in Stage 3) rather than written as one upfront schema — the same discipline
-a real deployment needs, where the previous migration has already run in production.
+Migrations are added incrementally per stage — `V1__create_shipments.sql`,
+`V2__create_tracking_events.sql`, and `notifications` in Stage 3 — rather than written as one upfront
+schema. That is the discipline a real deployment needs, where the previous migration has already run
+in production and cannot be edited.
 
 ---
 
@@ -218,3 +271,40 @@ Compose health checks gate startup: the service waits for PostgreSQL's `pg_isrea
 (the flags matter — without them it reports ready before the database exists), and the service's own
 check hits `/actuator/health/readiness` rather than a TCP port, so it reports healthy only after
 Flyway has migrated and the datasource answers.
+
+---
+
+## 9. Messaging
+
+**Redpanda, not Apache Kafka.** Same protocol, same client library, same consumer semantics, but a
+single container with no ZooKeeper or KRaft bootstrap and a roughly one-second start. That makes a
+broker-backed integration test cheap enough to run on every build, and the same image is used in
+Compose and in Testcontainers so tests and the local stack exercise the same broker.
+
+**Topics are declared as `NewTopic` beans**, created by Spring's `KafkaAdmin` at startup before any
+listener consumes. Relying on broker auto-create would give topics the broker's default partition
+count, silently breaking the partitioning that per-shipment ordering depends on. Declaring them also
+keeps the topology in source rather than in someone's shell history.
+
+**Three partitions, keyed by shipment id.** All events for one parcel land on one partition and are
+delivered to one consumer in production order. Ordering is guaranteed per parcel, never globally —
+which is exactly the guarantee the domain needs, and why the out-of-order rules exist for everything
+that crosses parcels or crosses a producer retry.
+
+**`ack-mode: record`.** The offset is committed after the listener method returns normally, one
+record at a time. Manual acknowledgement was considered and rejected: it adds a way to silently lose
+an offset commit while buying nothing, since the unit of work is exactly one record and the
+processor's transaction has already committed by the time the method returns.
+
+The offset commits *after* the database transaction, so a crash in that gap causes redelivery. That
+is the correct trade — at-least-once with a duplicate is recoverable, at-most-once with a lost
+delivery scan is not. Stage 3 closes the loop by making reprocessing idempotent.
+
+**Deserialization is pinned, not negotiated.** `spring.json.use.type.headers` is `false` and
+`spring.json.value.default.type` names the class. Trusting the producer's type header means a
+producer chooses which class the consumer instantiates. `spring.json.trusted.packages` names one
+package; never `*`.
+
+`ErrorHandlingDeserializer` wraps the JSON deserializer so an unparseable payload becomes a failed
+record the container can handle, rather than an exception inside the poll loop that stalls the
+partition forever.

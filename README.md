@@ -18,30 +18,31 @@ Carrier names in this project (`SWIFTPOST`, `NORDEX`, `PACIFICA`, `METROLINK`) a
 
 | Stage | Scope | State |
 |-------|-------|-------|
-| **1** | Repo structure, Gradle build, Docker Compose, database schema, Shipment REST API, tests | ✅ Complete — 35 tests passing |
-| 2 | Kafka, carrier simulator, event consumer, normalization, tracking history | Not started |
+| **1** | Repo structure, Gradle build, Docker Compose, database schema, Shipment REST API, tests | ✅ Complete |
+| **2** | Kafka, carrier simulator, event consumer, normalization, tracking history | ✅ Complete — 109 tests passing |
 | 3 | Duplicate detection, out-of-order handling, retries, DLQ, notifications, Redis cache | Not started |
 | 4 | Metrics, structured logging, integration tests, performance test, final docs | Not started |
 
-Stage 1 is a working vertical slice: you can register a parcel over HTTP, read it back, and list a
-retailer's parcels, all against real PostgreSQL with Flyway-managed schema.
+Stages 1–2 form a complete vertical slice: register a parcel over HTTP, have a carrier publish its
+own event codes to Kafka, watch them get normalized and applied to the shipment, and read the
+resulting status and full tracking history back over REST.
 
 ---
 
 ## Architecture
 
-Target architecture across all four stages. Solid lines are implemented in Stage 1; dashed lines
-arrive in Stages 2 and 3.
+Target architecture across all four stages. Solid lines are implemented; dashed lines arrive in
+Stage 3.
 
 ```mermaid
 flowchart LR
-    subgraph sim["carrier-simulator (Stage 2)"]
+    subgraph sim["carrier-simulator"]
         GEN["Event generator<br/>normal · duplicate · delayed<br/>out-of-order · invalid"]
     end
 
     subgraph broker["Redpanda (Kafka API)"]
-        T["carrier.tracking.events"]
-        DLQ["carrier.tracking.events.dlt"]
+        T["carrier-tracking-events"]
+        DLQ["carrier-tracking-events-dlt"]
     end
 
     subgraph svc["tracking-service (modular monolith)"]
@@ -54,20 +55,17 @@ flowchart LR
     PG[("PostgreSQL<br/>source of truth")]
     RD[("Redis<br/>read-through cache")]
 
-    GEN -.-> T
-    T -.-> CONS
-    CONS -.-> NORM
+    GEN --> T
+    T --> CONS
+    CONS --> NORM
     CONS -.-> NOTIF
     CONS -.->|"retries exhausted"| DLQ
-    CONS -.-> PG
+    CONS --> PG
     CONS -.->|invalidate| RD
 
     Client(["Retailer / consumer"]) --> API
     API --> PG
     API -.-> RD
-
-    classDef done stroke-width:2px
-    class API,PG done
 ```
 
 Deliberately **one** service, not many. Splitting shipment writes and event ingestion across
@@ -87,11 +85,11 @@ its own deployment.
 | Framework | Spring Boot 4.1 (Spring Framework 7) |
 | Build | Gradle 9.5 multi-project, wrapper included |
 | Database | PostgreSQL 17, schema owned by Flyway |
-| Messaging | Redpanda (Kafka API) — *Stage 2* |
+| Messaging | Redpanda (Kafka API), Spring Kafka 4 |
 | Cache | Redis — *Stage 3* |
 | API docs | springdoc-openapi 3.1 (OpenAPI 3.1) |
 | Observability | Spring Boot Actuator + Micrometer / Prometheus |
-| Testing | JUnit 6, AssertJ, MockMvc, Testcontainers 2 |
+| Testing | JUnit 6, AssertJ, MockMvc, Awaitility, Testcontainers 2 |
 | Packaging | Docker multi-stage build, Docker Compose |
 
 Spring Boot 4 notes worth knowing if you build on this: the web starter is now
@@ -108,14 +106,14 @@ to `spring-boot-starter-webmvc-test`, and Jackson 3 (`tools.jackson`) is the def
 docker compose up --build
 ```
 
-Compose waits for PostgreSQL's `pg_isready` check before starting the service, and the service's own
-health check hits `/actuator/health/readiness`, so it only reports healthy after Flyway has finished
-migrating.
+Compose gates startup on health checks: the service waits for PostgreSQL's `pg_isready` and
+Redpanda's `rpk cluster health`, and its own check hits `/actuator/health/readiness`, so it reports
+healthy only after Flyway has migrated. The two Kafka topics are created by the service at startup.
 
 ```bash
-docker compose ps          # both containers should read (healthy)
+docker compose ps          # postgres, redpanda and tracking-service should read (healthy)
 docker compose logs -f tracking-service
-docker compose down        # add -v to drop the database volume
+docker compose down        # add -v to drop the database and broker volumes
 ```
 
 | Service | URL |
@@ -126,22 +124,59 @@ docker compose down        # add -v to drop the database volume
 | Health | http://localhost:8080/actuator/health |
 | Prometheus metrics | http://localhost:8080/actuator/prometheus |
 | PostgreSQL | `localhost:5432` — `parcelflow` / `parcelflow` / db `parcelflow` |
+| Kafka (Redpanda) | `localhost:19092` from the host, `redpanda:9092` between containers |
 
-### Locally against a containerized database
+`carrier-simulator` sits behind a Compose profile so `up` does not start it — it is a one-shot CLI.
+See the demo below.
+
+### Locally against containerized infrastructure
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redpanda
 ./gradlew :tracking-service:bootRun
 ```
 
 ### Tests
 
 ```bash
-./gradlew test
+./gradlew test          # or ./gradlew clean build
 ```
 
-Requires a running Docker daemon: the integration tests start a real PostgreSQL container via
-Testcontainers. No mocked database anywhere.
+Requires a running Docker daemon: the integration tests start real PostgreSQL and Redpanda
+containers via Testcontainers. No mocked database and no embedded broker anywhere.
+
+---
+
+## Demo: a parcel from label to doorstep
+
+```bash
+docker compose up --build -d
+
+# 1. A retailer registers a parcel
+SHIPMENT_ID=$(curl -s -X POST http://localhost:8080/api/shipments \
+  -H 'Content-Type: application/json' \
+  -d '{"retailerId":"retailer-42","customerId":"cust-9f13",
+       "trackingNumber":"SP100000000042","carrierCode":"SWIFTPOST"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["shipmentId"])')
+
+# 2. The carrier publishes its own event codes to Kafka
+docker compose run --rm carrier-simulator \
+  --shipment-id=$SHIPMENT_ID \
+  --tracking-number=SP100000000042 \
+  --carrier=SWIFTPOST \
+  --scenario=NORMAL \
+  --delay-ms=300
+
+# 3. The parcel is now DELIVERED, and version is 8 — one optimistic-lock
+#    increment per applied event
+curl -s http://localhost:8080/api/shipments/$SHIPMENT_ID
+
+# 4. Full history, oldest first, with both readings of every scan
+curl -s http://localhost:8080/api/shipments/$SHIPMENT_ID/events
+```
+
+Swap `--carrier=PACIFICA` (with a `PACIFICA` shipment) to watch a completely different carrier
+vocabulary — `MANIFESTED`, `COLLECTED`, `MOVING`, `COMPLETE` — normalize to the same statuses.
 
 ---
 
@@ -217,6 +252,42 @@ Validation failures return `400` with a flat per-field map:
 }
 ```
 
+Fetch tracking history — each entry carries both ParcelFlow's normalized reading and the carrier's
+own code:
+
+```bash
+curl 'http://localhost:8080/api/shipments/{shipmentId}/events?page=0&size=50'
+```
+
+```json
+{
+  "content": [
+    {
+      "eventId": "cc512789-b504-4f1b-b1ad-6c568f9823df",
+      "normalizedEventType": "OUT_FOR_DELIVERY",
+      "carrierEventType": "SP_OFD",
+      "carrierCode": "SWIFTPOST",
+      "eventTime": "2026-08-05T20:07:08.084328Z",
+      "receivedAt": "2026-08-05T23:07:10.312477Z",
+      "sequenceNumber": 7,
+      "location": "Ashgrove",
+      "description": "Out for delivery",
+      "processingStatus": "APPLIED",
+      "correlationId": "08ad3a97-8e5c-4b12-8ee5-80938efa139a"
+    }
+  ],
+  "page": 0,
+  "size": 50,
+  "totalElements": 8,
+  "totalPages": 1,
+  "hasNext": false
+}
+```
+
+Events are ordered by `eventTime`, then `sequenceNumber`. `processingStatus` is `APPLIED` when the
+event advanced the shipment and `SUPERSEDED` when it arrived too late to — superseded events stay in
+history because they are real observations.
+
 ### Endpoints
 
 | Method | Path | Stage |
@@ -234,8 +305,12 @@ Validation failures return `400` with a flat per-field map:
 
 | Challenge | Approach |
 |---|---|
-| **Duplicate events** | Unique constraint on `event_id` in PostgreSQL, not just consumer configuration. Kafka gives at-least-once delivery; a rebalance replays an uncommitted offset regardless of how the consumer is tuned, so the database has to be the last line of defence. *(Stage 3)* |
-| **Out-of-order events** | Ordering authority is the carrier's per-shipment `sequenceNumber`, with `eventTime` as tie-breaker. An older event is still appended to history but does not move `currentStatus`. Implemented and unit-tested in Stage 1 (`Shipment.recordEvent`). |
+| **Duplicate events** | Unique constraint on `event_id` in PostgreSQL, not just consumer configuration. Kafka gives at-least-once delivery; a rebalance replays an uncommitted offset regardless of how the consumer is tuned, so the database has to be the last line of defence. Constraint in place from Stage 2; *application-side handling in Stage 3.* |
+| **Out-of-order events** | Ordering authority is the carrier's per-shipment `sequenceNumber`, with `eventTime` as tie-breaker. A late event is still appended to history — marked `SUPERSEDED` — but does not move `currentStatus`. |
+| **Per-partition ordering** | Every event is keyed by shipment id, so one parcel's scans land on one partition and reach one consumer in production order. Ordering is guaranteed per parcel, never globally — which is exactly the guarantee the domain needs. |
+| **Carrier heterogeneity** | Each carrier's vocabulary is normalized by its own strategy bean, discovered through a registry. `DELIVERY_FAILED` → `DELIVERY_ATTEMPTED` and `COMPLETE` → `DELIVERED` show why this is not a string transform. |
+| **Deserialization safety** | Producer type headers are ignored and the deserializer is pinned to one class; trusted packages are named explicitly, never `*`. A producer does not get to choose which class the consumer instantiates. |
+| **Atomic ingest** | The history insert and the shipment update are one local transaction, so a parcel can never show a status that no stored event justifies. Both writes hit the same database, which is the main reason ingestion was not split into its own service. |
 | **Non-linear status** | Statuses are deliberately unranked. `DELAYED` and `DELIVERY_ATTEMPTED` are exception states that can occur at several points, and `ARRIVED_AT_FACILITY` repeats — an integer rank would encode a false model of a carrier network. |
 | **Terminal state** | `DELIVERED` is sticky, so a backfilled scan with a higher sequence number cannot un-deliver a parcel. |
 | **Concurrent updates** | JPA `@Version` optimistic locking on the shipment row. Two consumer threads handling events for the same parcel cannot silently lose an update; the loser retries the whole read-decide-write cycle. |
@@ -249,7 +324,7 @@ Validation failures return `400` with a flat per-field map:
 
 - [docs/architecture.md](docs/architecture.md) — module boundaries, data model, design decisions
 - [docs/testing.md](docs/testing.md) — testing strategy and what each test proves
-- `docs/event-processing.md` — event pipeline, idempotency, DLQ *(Stage 2–3)*
+- [docs/event-processing.md](docs/event-processing.md) — event contract, normalization, pipeline, error classification
 - `docs/performance-results.md` — load test script and results template *(Stage 4)*
 
 ---
@@ -258,8 +333,13 @@ Validation failures return `400` with a flat per-field map:
 
 Known limitations, stated plainly:
 
-- **Single consumer instance.** Partition-key correctness (all events for a parcel on one partition)
-  is designed for but not yet exercised across multiple instances.
+- **Single consumer instance.** `concurrency: 1`. Partition-key correctness is implemented and the
+  topic has three partitions, but a rebalance across multiple instances is not yet exercised.
+- **No dead letter publication yet.** A record that cannot be processed is retried by the default
+  error handler and then dropped with a log line. The DLT topic exists but nothing writes to it.
+- **The event contract is declared twice**, once per module, deliberately — see
+  [docs/event-processing.md](docs/event-processing.md#the-contract-is-not-a-shared-class). The two
+  copies must be kept in step by hand.
 - **No schema registry.** The carrier event contract is JSON validated at the edge. A registry with
   Avro or Protobuf would catch producer-side breakage at publish time instead of consume time.
 - **`sequenceNumber` is trusted.** Real carriers sometimes omit or reset it; the fallback to

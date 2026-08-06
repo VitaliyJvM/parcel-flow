@@ -1,5 +1,4 @@
 rootProject.name = 'parcel-flow'
 
-// Stage 1 ships the tracking-service only.
-// 'carrier-simulator' is added in Stage 2, together with Kafka.
 include 'tracking-service'
+include 'carrier-simulator'
