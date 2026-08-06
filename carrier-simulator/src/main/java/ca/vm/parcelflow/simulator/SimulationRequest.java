@@ -13,8 +13,9 @@ import org.springframework.boot.ApplicationArguments;
  * argument fails immediately with a usage message, instead of silently falling back to a default
  * and publishing events for the wrong parcel.
  *
- * @param scenario only {@link Scenario#NORMAL} exists in Stage 2; duplicate, delayed, out-of-order
- *     and invalid scenarios arrive in Stage 3
+ * @param seed makes a run reproducible. Every identifier the simulator generates comes from a
+ *     generator seeded with this value, so the same command produces byte-identical events —
+ *     which is what lets a failure be re-run rather than merely described.
  */
 public record SimulationRequest(
         UUID shipmentId,
@@ -22,11 +23,8 @@ public record SimulationRequest(
         String carrierCode,
         Scenario scenario,
         Duration delayBetweenEvents,
-        String correlationId) {
-
-    public enum Scenario {
-        NORMAL
-    }
+        String correlationId,
+        long seed) {
 
     public static final String USAGE = """
             Usage:
@@ -36,10 +34,20 @@ public record SimulationRequest(
                 --carrier=SWIFTPOST \\
                 [--scenario=NORMAL] \\
                 [--delay-ms=500] \\
+                [--seed=42] \\
                 [--correlation-id=<id>]
 
-            Carriers: SWIFTPOST, PACIFICA
-            Scenarios: NORMAL (duplicate, out-of-order, delayed and invalid arrive in Stage 3)""";
+            Carriers:  SWIFTPOST, PACIFICA
+
+            Scenarios:
+              NORMAL                  Publishes the carrier's full journey once.
+              DUPLICATE               Republishes some events verbatim to exercise idempotency.
+              OUT_OF_ORDER            Publishes the journey with the middle events reordered.
+              INVALID_EVENT           Publishes an event that fails validation.
+              UNKNOWN_CARRIER_EVENT   Publishes an event whose carrier code has no mapping.
+              RAPID_CONCURRENT_EVENTS Publishes the journey with no delay between events.
+
+            Pass --seed to make a run reproducible: the same seed generates the same event ids.""";
 
     public static SimulationRequest parse(ApplicationArguments args) {
         UUID shipmentId = parseUuid(required(args, "shipment-id"));
@@ -49,12 +57,13 @@ public record SimulationRequest(
         // Fail here rather than after connecting to Kafka and publishing half a journey.
         CarrierEventScript.forCarrier(carrier);
 
-        Scenario scenario = parseScenario(optional(args, "scenario", Scenario.NORMAL.name()));
+        Scenario scenario = Scenario.parse(optional(args, "scenario", Scenario.NORMAL.name()));
         Duration delay = parseDelay(optional(args, "delay-ms", "500"));
-        String correlationId = optional(args, "correlation-id", UUID.randomUUID().toString());
+        long seed = parseSeed(optional(args, "seed", null));
+        String correlationId = optional(args, "correlation-id", null);
 
         return new SimulationRequest(
-                shipmentId, trackingNumber, carrier, scenario, delay, correlationId);
+                shipmentId, trackingNumber, carrier, scenario, delay, correlationId, seed);
     }
 
     private static String required(ApplicationArguments args, String name) {
@@ -81,16 +90,6 @@ public record SimulationRequest(
         }
     }
 
-    private static Scenario parseScenario(String value) {
-        try {
-            return Scenario.valueOf(value.toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException(
-                    "Unknown --scenario '%s'. Supported: %s"
-                            .formatted(value, List.of(Scenario.values())), e);
-        }
-    }
-
     private static Duration parseDelay(String value) {
         long millis;
         try {
@@ -103,5 +102,22 @@ public record SimulationRequest(
             throw new IllegalArgumentException("--delay-ms must not be negative");
         }
         return Duration.ofMillis(millis);
+    }
+
+    /**
+     * Falls back to a random seed rather than a fixed one. A fixed default would make every run
+     * generate the same event ids, and the second run against the same broker would then be
+     * silently deduplicated as a replay of the first.
+     */
+    private static long parseSeed(String value) {
+        if (value == null) {
+            return new java.security.SecureRandom().nextLong();
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    "--seed must be a whole number, got '%s'".formatted(value), e);
+        }
     }
 }

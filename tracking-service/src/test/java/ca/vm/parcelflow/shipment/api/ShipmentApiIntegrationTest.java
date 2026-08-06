@@ -10,7 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import ca.vm.parcelflow.shipment.ShipmentRepository;
-import ca.vm.parcelflow.support.PostgresIntegrationTest;
+import ca.vm.parcelflow.support.RedisIntegrationTest;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,7 +29,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-class ShipmentApiIntegrationTest extends PostgresIntegrationTest {
+class ShipmentApiIntegrationTest extends RedisIntegrationTest {
 
     private static final MediaType PROBLEM_JSON = MediaType.APPLICATION_PROBLEM_JSON;
 

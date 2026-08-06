@@ -41,10 +41,15 @@ public class ShipmentController {
     }
 
     @GetMapping("/{shipmentId}")
-    @Operation(summary = "Get the current status of a shipment")
+    @Operation(
+            summary = "Get the current status of a shipment",
+            description = """
+                    Served from a Redis cache that is evicted whenever an event advances the \
+                    shipment, and expires on a TTL as a backstop. PostgreSQL remains the source of \
+                    truth: if Redis is unavailable the response is identical, just slower.""")
     @ApiResponse(responseCode = "200", description = "Current shipment state")
     @ApiResponse(responseCode = "404", description = "No such shipment", content = {})
     public ShipmentResponse getShipment(@PathVariable UUID shipmentId) {
-        return ShipmentResponse.from(shipmentService.getShipment(shipmentId));
+        return shipmentService.getShipmentTracking(shipmentId);
     }
 }

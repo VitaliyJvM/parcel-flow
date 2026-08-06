@@ -1,157 +1,120 @@
 package ca.vm.parcelflow.tracking;
 
-import ca.vm.parcelflow.carrier.normalization.CarrierEventNormalizers;
-import ca.vm.parcelflow.shipment.ShipmentNotFoundException;
-import ca.vm.parcelflow.shipment.ShipmentRepository;
-import ca.vm.parcelflow.shipment.domain.Shipment;
-import ca.vm.parcelflow.shipment.domain.ShipmentStatus;
-import ca.vm.parcelflow.tracking.domain.EventProcessingStatus;
-import ca.vm.parcelflow.tracking.domain.TrackingEvent;
+import ca.vm.parcelflow.infrastructure.config.EventProcessingProperties;
 import ca.vm.parcelflow.tracking.messaging.CarrierTrackingEventMessage;
-import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validator;
-import java.time.Clock;
-import java.time.Instant;
-import java.util.Comparator;
-import java.util.Set;
-import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Turns one carrier event into a history row and, when the event is newer than what has already
- * been applied, a shipment status change.
+ * Entry point for processing a carrier event.
  *
- * <p>This is where all the business logic lives. The Kafka listener above it does transport
- * concerns only, which is what allows the same processing path to be driven directly from a test,
- * from a replay tool, or from the Stage 3 admin retry endpoint without going through a broker.
+ * <p>Holds no transaction of its own. Everything it does — retrying, and turning a constraint
+ * violation into a duplicate — has to happen <em>outside</em> the transaction that failed, because
+ * both conditions arrive only after that transaction has been marked rollback-only. Doing this work
+ * inside {@link TrackingEventRecorder} would produce an {@code UnexpectedRollbackException} at
+ * commit instead of the intended behaviour.
  *
- * <p><strong>Transaction boundary.</strong> The whole method is one transaction. The history insert
- * and the shipment update either both land or neither does — there is no window in which a parcel
- * shows a status that no stored event justifies. Since both writes target the same database, this
- * needs no distributed coordination, which is the main reason ingestion was not split into its own
- * service.
+ * <p>Two conditions are handled here:
+ *
+ * <ul>
+ *   <li><b>Duplicate delivery.</b> The recorder pre-checks for an existing event id, but two
+ *       threads can both pass that check. The loser's insert violates the unique constraint, and
+ *       this class turns that into a successful no-op. A duplicate is not an error: the work was
+ *       already done.
+ *   <li><b>Optimistic-lock conflict.</b> Another thread updated the shipment first. Retried a
+ *       bounded number of times with a fresh transaction each attempt, which re-reads the shipment
+ *       and re-runs the ordering decision against the state that actually won.
+ * </ul>
  */
 @Service
 public class TrackingEventProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(TrackingEventProcessor.class);
 
-    private final ShipmentRepository shipmentRepository;
-    private final TrackingEventRepository trackingEventRepository;
-    private final CarrierEventNormalizers normalizers;
-    private final Validator validator;
-    private final Clock clock;
+    private final TrackingEventRecorder recorder;
+    private final TrackingEventMetrics metrics;
+    private final EventProcessingProperties properties;
 
     public TrackingEventProcessor(
-            ShipmentRepository shipmentRepository,
-            TrackingEventRepository trackingEventRepository,
-            CarrierEventNormalizers normalizers,
-            Validator validator,
-            Clock clock) {
-        this.shipmentRepository = shipmentRepository;
-        this.trackingEventRepository = trackingEventRepository;
-        this.normalizers = normalizers;
-        this.validator = validator;
-        this.clock = clock;
+            TrackingEventRecorder recorder,
+            TrackingEventMetrics metrics,
+            EventProcessingProperties properties) {
+        this.recorder = recorder;
+        this.metrics = metrics;
+        this.properties = properties;
     }
 
     /**
      * @throws InvalidCarrierEventException if the message is structurally unusable
-     * @throws ShipmentNotFoundException if the event references an unknown shipment
-     * @throws CarrierMismatchException if the event's carrier disagrees with the shipment's
-     * @throws ca.vm.parcelflow.carrier.normalization.UnsupportedCarrierException if no normalizer
-     *     is registered for the carrier
-     * @throws ca.vm.parcelflow.carrier.normalization.UnknownCarrierEventTypeException if the
-     *     carrier's event code has no mapping
+     * @throws ca.vm.parcelflow.shipment.ShipmentNotFoundException if the shipment is unknown
+     * @throws CarrierMismatchException if the carrier disagrees with the shipment's
+     * @throws OptimisticLockingFailureException if the bounded retries are exhausted, so the Kafka
+     *     error handler can apply its own backoff rather than this loop spinning
      */
-    @Transactional
     public TrackingEventProcessingResult process(CarrierTrackingEventMessage message) {
-        validate(message);
+        metrics.eventReceived();
 
-        Shipment shipment = shipmentRepository
-                .findById(message.shipmentId())
-                .orElseThrow(() -> new ShipmentNotFoundException(message.shipmentId()));
+        int maxAttempts = properties.maxOptimisticLockRetries() + 1;
 
-        if (shipment.getCarrierCode() != message.carrierCode()) {
-            throw new CarrierMismatchException(
-                    shipment.getShipmentId(), shipment.getCarrierCode(), message.carrierCode());
+        for (int attempt = 1; ; attempt++) {
+            try {
+                TrackingEventProcessingResult result = recorder.record(message, attempt);
+                recordOutcome(result);
+                return result;
+
+            } catch (DataIntegrityViolationException e) {
+                // Lost the insert race for this event id. The winner has already stored it, so
+                // there is nothing left to do. Logged without the stack trace: an expected
+                // condition that prints a trace teaches operators to ignore traces.
+                metrics.duplicateEvent();
+                log.info("Event {} was already stored by a concurrent consumer; treating the "
+                        + "redelivery as a no-op ({})", message.eventId(), e.getClass().getSimpleName());
+                return duplicateAfterRace(message, attempt);
+
+            } catch (OptimisticLockingFailureException e) {
+                metrics.optimisticLockConflict();
+                if (attempt >= maxAttempts) {
+                    // Bounded, deliberately. An unbounded loop under sustained contention is a
+                    // livelock that consumes a consumer thread forever. Giving up hands the record
+                    // back to the Kafka error handler, whose backoff spaces out the next attempt
+                    // instead of hammering the row.
+                    log.warn("Giving up on event {} after {} optimistic-lock conflicts",
+                            message.eventId(), attempt);
+                    throw e;
+                }
+                log.debug("Optimistic-lock conflict on event {}, attempt {} of {}; retrying",
+                        message.eventId(), attempt, maxAttempts);
+            }
         }
-
-        ShipmentStatus normalized =
-                normalizers.normalize(message.carrierCode(), message.eventType());
-
-        Instant now = clock.instant();
-
-        // The ordering decision is the domain model's, not this service's. Stage 1 already proved
-        // it in isolation; here it simply decides which processing status gets recorded.
-        boolean advanced = shipment.recordEvent(
-                normalized, message.eventTime(), message.sequenceNumber(), now);
-
-        EventProcessingStatus processingStatus =
-                advanced ? EventProcessingStatus.APPLIED : EventProcessingStatus.SUPERSEDED;
-
-        trackingEventRepository.save(TrackingEvent.builder()
-                .eventId(message.eventId())
-                .shipmentId(shipment.getShipmentId())
-                .trackingNumber(message.trackingNumber())
-                .carrierCode(message.carrierCode())
-                .carrierEventType(message.eventType())
-                .normalizedEventType(normalized)
-                .eventTime(message.eventTime())
-                .receivedAt(now)
-                .sequenceNumber(message.sequenceNumber())
-                .location(message.location())
-                .description(message.description())
-                .correlationId(message.correlationId())
-                .processingStatus(processingStatus)
-                .build());
-
-        // The shipment is a managed entity: the status change flushes on commit, guarded by
-        // @Version. No explicit save call, and no second write path to keep in sync.
-
-        log.debug("Processed event {} for shipment {}: {} -> {} ({})",
-                message.eventId(), shipment.getShipmentId(), message.eventType(), normalized,
-                processingStatus);
-
-        return new TrackingEventProcessingResult(
-                message.eventId(),
-                shipment.getShipmentId(),
-                normalized,
-                shipment.getCurrentStatus(),
-                processingStatus);
     }
 
     /**
-     * Validation is explicit here rather than via {@code @Valid} on the listener parameter.
+     * Re-reads the stored event after losing an insert race.
      *
-     * <p>A listener-level annotation raises a Spring Messaging exception wrapped in a
-     * {@code ListenerExecutionFailedException}, which Stage 3 would have to unwrap to decide
-     * "permanently invalid, dead letter it" versus "transient, retry it". Failing here with a
-     * dedicated exception type makes that decision a straightforward {@code instanceof}.
+     * <p>A second call into the recorder, which now takes its duplicate fast path. This is safe
+     * from unbounded recursion because the winning transaction has committed by the time the
+     * constraint fired, so the pre-check cannot miss.
      */
-    private void validate(CarrierTrackingEventMessage message) {
-        if (message == null) {
-            throw new InvalidCarrierEventException("Event payload is missing");
-        }
-        if (message.schemaVersion() == null
-                || message.schemaVersion() != CarrierTrackingEventMessage.SUPPORTED_SCHEMA_VERSION) {
-            throw new InvalidCarrierEventException(
-                    "Unsupported schema version %s; this service understands version %d"
-                            .formatted(message.schemaVersion(),
-                                    CarrierTrackingEventMessage.SUPPORTED_SCHEMA_VERSION));
-        }
+    private TrackingEventProcessingResult duplicateAfterRace(
+            CarrierTrackingEventMessage message, int attempt) {
+        TrackingEventProcessingResult result = recorder.record(message, attempt);
+        recordOutcome(result);
+        return result;
+    }
 
-        Set<ConstraintViolation<CarrierTrackingEventMessage>> violations = validator.validate(message);
-        if (!violations.isEmpty()) {
-            String detail = violations.stream()
-                    .map(violation -> "%s %s".formatted(
-                            violation.getPropertyPath(), violation.getMessage()))
-                    .sorted(Comparator.naturalOrder())
-                    .collect(Collectors.joining(", "));
-            throw new InvalidCarrierEventException("Event failed validation: " + detail);
+    private void recordOutcome(TrackingEventProcessingResult result) {
+        if (result.duplicate()) {
+            metrics.duplicateEvent();
+            log.info("Event {} already processed; no shipment or notification change", result.eventId());
+        } else if (result.advancedShipment()) {
+            metrics.eventApplied();
+        } else {
+            metrics.eventSuperseded();
+            log.info("Event {} arrived out of order or after a terminal status; stored in history "
+                    + "but shipment remains {}", result.eventId(), result.shipmentStatusAfterProcessing());
         }
     }
 }

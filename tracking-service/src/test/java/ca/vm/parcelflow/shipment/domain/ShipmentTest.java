@@ -108,13 +108,45 @@ class ShipmentTest {
         }
 
         @Test
-        @DisplayName("the same sequence number replayed does not advance the shipment")
-        void sameSequenceNumberDoesNotAdvance() {
+        @DisplayName("an older event time at the same sequence number does not advance the shipment")
+        void olderEventTimeAtSameSequenceDoesNotAdvance() {
             Shipment shipment = newShipment();
             shipment.recordEvent(ShipmentStatus.IN_TRANSIT, T0.plusSeconds(120), 3, NOW);
 
             boolean advanced = shipment.recordEvent(
-                    ShipmentStatus.DELAYED, T0.plusSeconds(120), 3, NOW);
+                    ShipmentStatus.DELAYED, T0.plusSeconds(60), 3, NOW.plusSeconds(1));
+
+            assertThat(advanced).isFalse();
+            assertThat(shipment.getCurrentStatus()).isEqualTo(ShipmentStatus.IN_TRANSIT);
+        }
+
+        @Test
+        @DisplayName("receivedAt breaks the tie when sequence and event time are both equal")
+        void receivedAtBreaksTheFinalTie() {
+            // Stage 3 refined the rule from two levels to three. Two *distinct* events sharing a
+            // sequence number and an event time are either carrier corruption or a correction —
+            // a carrier re-reporting the same slot with a fixed status — and last-received-wins is
+            // what a correction needs. An exact replay of the *same* event never reaches this
+            // path: it is stopped by the event_id uniqueness constraint.
+            Shipment shipment = newShipment();
+            shipment.recordEvent(ShipmentStatus.IN_TRANSIT, T0.plusSeconds(120), 3, NOW);
+
+            boolean advanced = shipment.recordEvent(
+                    ShipmentStatus.DELAYED, T0.plusSeconds(120), 3, NOW.plusSeconds(30));
+
+            assertThat(advanced).isTrue();
+            assertThat(shipment.getCurrentStatus()).isEqualTo(ShipmentStatus.DELAYED);
+            assertThat(shipment.getLastReceivedAt()).isEqualTo(NOW.plusSeconds(30));
+        }
+
+        @Test
+        @DisplayName("an event received earlier than the applied one loses the final tie-break")
+        void earlierReceivedAtLosesTheFinalTie() {
+            Shipment shipment = newShipment();
+            shipment.recordEvent(ShipmentStatus.IN_TRANSIT, T0.plusSeconds(120), 3, NOW);
+
+            boolean advanced = shipment.recordEvent(
+                    ShipmentStatus.DELAYED, T0.plusSeconds(120), 3, NOW.minusSeconds(30));
 
             assertThat(advanced).isFalse();
             assertThat(shipment.getCurrentStatus()).isEqualTo(ShipmentStatus.IN_TRANSIT);

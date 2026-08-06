@@ -59,9 +59,19 @@ spring:
     listener:
       # Commit the offset after each record's listener method returns normally.
       ack-mode: record
-      # One consumer thread in Stage 2. Multiple consumers are a Stage 3 concern, once processing
-      # is idempotent enough for a rebalance to be harmless.
-      concurrency: 1
+      # One thread per partition. Safe now that processing is idempotent: a rebalance that
+      # redelivers an uncommitted record is a duplicate, and a duplicate is a no-op. Events for one
+      # parcel share a partition key, so they still reach one thread in order.
+      concurrency: 3
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      # Redis is a read accelerator, never in the write path. Short timeouts so an unreachable
+      # cache degrades the read latency rather than hanging the request thread.
+      timeout: 500ms
+      connect-timeout: 500ms
 
 parcelflow:
   kafka:
@@ -70,6 +80,24 @@ parcelflow:
     replication-factor: 1
     carrier-tracking-events-topic: carrier-tracking-events
     carrier-tracking-events-dlt-topic: carrier-tracking-events-dlt
+
+  processing:
+    # In-process retries of an optimistic-lock conflict, each in a fresh transaction.
+    max-optimistic-lock-retries: 3
+    # Kafka-level re-deliveries of a retryable failure before the record is dead-lettered.
+    # Worst case for a poisoned-but-retryable record: 0.2 + 0.4 + 0.8 + 1.6 + 2 = ~5s.
+    max-kafka-retries: 5
+    retry-initial-backoff: 200ms
+    retry-backoff-multiplier: 2.0
+    retry-max-backoff: 2s
+    # Short enough that a missed eviction self-heals quickly, long enough to absorb the read burst
+    # that follows a tracking-page link in a delivery email.
+    shipment-cache-ttl: 5m
+
+  cache:
+    # Turning this off is a supported configuration, not a test affordance: if the service is
+    # genuinely correct without Redis, running it that way must work.
+    enabled: true
 
 server:
   port: 8080
@@ -88,6 +116,15 @@ management:
   endpoint:
     health:
       show-details: always
+      group:
+        # Redis is deliberately absent from readiness. The service is correct without it — a cache
+        # outage degrades read latency, nothing else — so letting Redis fail the readiness probe
+        # would take a healthy instance out of rotation for a problem it can absorb. Redis still
+        # appears in /actuator/health so the outage is visible.
+        readiness:
+          include: readinessState, db
+        liveness:
+          include: livenessState
   health:
     probes:
       enabled: true

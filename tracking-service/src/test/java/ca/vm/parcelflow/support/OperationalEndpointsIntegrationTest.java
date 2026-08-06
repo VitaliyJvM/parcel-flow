@@ -22,7 +22,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-class OperationalEndpointsIntegrationTest extends PostgresIntegrationTest {
+class OperationalEndpointsIntegrationTest extends RedisIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;

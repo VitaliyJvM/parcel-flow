@@ -7,6 +7,8 @@ import java.time.Duration;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.DefaultApplicationArguments;
 
 class SimulationRequestTest {
@@ -27,7 +29,7 @@ class SimulationRequestTest {
         assertThat(request.shipmentId()).isEqualTo(UUID.fromString(SHIPMENT_ID));
         assertThat(request.trackingNumber()).isEqualTo("SP100000000042");
         assertThat(request.carrierCode()).isEqualTo("SWIFTPOST");
-        assertThat(request.scenario()).isEqualTo(SimulationRequest.Scenario.NORMAL);
+        assertThat(request.scenario()).isEqualTo(Scenario.NORMAL);
         assertThat(request.delayBetweenEvents()).isEqualTo(Duration.ofMillis(250));
         assertThat(request.correlationId()).isEqualTo("corr-1");
     }
@@ -41,9 +43,36 @@ class SimulationRequestTest {
                 "--carrier=pacifica");
 
         assertThat(request.carrierCode()).isEqualTo("PACIFICA");
-        assertThat(request.scenario()).isEqualTo(SimulationRequest.Scenario.NORMAL);
+        assertThat(request.scenario()).isEqualTo(Scenario.NORMAL);
         assertThat(request.delayBetweenEvents()).isEqualTo(Duration.ofMillis(500));
-        assertThat(request.correlationId()).isNotBlank();
+        // No --correlation-id given: the factory derives one from the seed rather than the parser
+        // inventing one, so a seeded run is reproducible end to end.
+        assertThat(request.correlationId()).isNull();
+    }
+
+    @Test
+    @DisplayName("--seed is parsed, and omitting it yields a random seed rather than a fixed one")
+    void parsesSeed() {
+        assertThat(parse("--shipment-id=" + SHIPMENT_ID, "--tracking-number=SP1",
+                "--carrier=SWIFTPOST", "--seed=42").seed()).isEqualTo(42L);
+
+        // A fixed default would make every run generate identical event ids, and the second run
+        // against the same broker would be silently deduplicated as a replay of the first.
+        long first = parse("--shipment-id=" + SHIPMENT_ID, "--tracking-number=SP1",
+                "--carrier=SWIFTPOST").seed();
+        long second = parse("--shipment-id=" + SHIPMENT_ID, "--tracking-number=SP1",
+                "--carrier=SWIFTPOST").seed();
+        assertThat(first).isNotEqualTo(second);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Scenario.class)
+    @DisplayName("every scenario is selectable by name, case-insensitively")
+    void parsesEveryScenario(Scenario scenario) {
+        assertThat(parse("--shipment-id=" + SHIPMENT_ID, "--tracking-number=SP1",
+                "--carrier=SWIFTPOST",
+                "--scenario=" + scenario.name().toLowerCase(java.util.Locale.ROOT)).scenario())
+                .isEqualTo(scenario);
     }
 
     @Test
@@ -93,6 +122,11 @@ class SimulationRequestTest {
                 "--carrier=SWIFTPOST", "--scenario=CHAOS"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unknown --scenario");
+
+        assertThatThrownBy(() -> parse("--shipment-id=" + SHIPMENT_ID, "--tracking-number=SP1",
+                "--carrier=SWIFTPOST", "--seed=soon"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("--seed");
     }
 
     private static SimulationRequest parse(String... args) {

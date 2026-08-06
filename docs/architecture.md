@@ -3,7 +3,7 @@
 > ParcelFlow is an independent portfolio and training project. It is not affiliated with or based on
 > proprietary systems from any delivery carriers or ecommerce retailers.
 
-This document covers what exists after Stage 2 and the decisions behind it. Sections marked
+This document covers what exists after Stage 3 and the decisions behind it. Sections marked
 *(planned)* describe committed design that later stages implement.
 
 The event pipeline has its own document: [event-processing.md](event-processing.md).
@@ -17,7 +17,7 @@ Two deployables:
 | Application | Role |
 |---|---|
 | **tracking-service** | Modular monolith. Owns the shipment REST API and the carrier event consumer. |
-| **carrier-simulator** | Command-line producer that publishes synthetic carrier events. Broken-event scenarios arrive in Stage 3. |
+| **carrier-simulator** | Command-line producer of synthetic carrier events, with six reproducible scenarios covering normal, duplicate, out-of-order and invalid traffic. |
 
 ### Why one service and not several
 
@@ -41,8 +41,10 @@ ca.vm.parcelflow
 │   └── api             tracking history REST
 ├── carrier         carrier codes and per-carrier event normalizers
 │   └── normalization   one strategy per carrier, plus the registry
-├── notification    milestone rules and notification records            (Stage 3)
-├── infrastructure  framework wiring: Clock, OpenAPI, Kafka topics
+│   ├── error           ErrorCategory and the classifier: one retry policy
+│   └── failure         failed-event record, DLT recoverer, admin API
+├── notification    milestone rules and notification records
+├── infrastructure  framework wiring: Clock, OpenAPI, Kafka topics, cache, error handling
 └── shared          cross-module API concerns: error handling, paging
 ```
 
@@ -123,9 +125,36 @@ Indexes: `(shipment_id, event_time, sequence_number)` for the history endpoint i
 `(tracking_number, event_time)` for support lookups, `(received_at DESC)` for operational queries
 over the recent ingest stream.
 
-### `notifications` *(planned, Stage 3)*
+### `notifications` — implemented
 
-One row per milestone crossed. Records only; nothing is delivered.
+One row per milestone crossed: `notification_id`, `shipment_id`, `source_event_id`,
+`notification_type`, `channel`, `status`, `created_at`. Records only; nothing is delivered.
+
+The important part is `UNIQUE (shipment_id, source_event_id)`. Keeping the id of the causing event
+turns "do not notify a customer twice for one scan" from a check the application has to remember
+into a constraint the database enforces — which is what makes it hold under a race between two
+consumer threads. Indexed on `(shipment_id, created_at, notification_id)`; the id is the last sort
+key because notifications created in one transaction share `created_at` to the microsecond, and
+without a tie-break they would page non-deterministically.
+
+### `failed_events` — implemented
+
+The durable record of an event that could not be processed: identifiers, the original `payload`, the
+error category, a bounded error message, retry count, workflow status, and the original topic,
+partition and offset.
+
+`payload` is `TEXT`, not `JSONB`, on purpose: a payload that failed to deserialize is frequently not
+valid JSON, and `JSONB` would reject the very rows most worth keeping. `event_id` is `UNIQUE` and
+nullable — Postgres treats NULLs as distinct, so several unparseable payloads coexist while a named
+event still gets exactly one row that accumulates its retry history.
+
+There is deliberately no stack-trace column. A trace is unbounded, mostly framework frames, and
+belongs in the log stream where it can be sampled and expired.
+
+### `shipments.last_received_at` — added in Stage 3
+
+The third level of the ordering rule needs something to compare against. See
+[event-processing.md](event-processing.md#5-event-ordering).
 
 ---
 
@@ -136,10 +165,14 @@ This is the heart of the project, and it is deliberately in the domain model rat
 
 ```
 if current status is terminal        -> reject  (DELIVERED is sticky)
-if no event applied yet             -> accept  (first event always wins)
-if sequence numbers differ          -> accept iff incoming > last applied
-else (sequence numbers equal)       -> accept iff eventTime is after last applied
+if no event applied yet              -> accept  (first event always wins)
+if sequence numbers differ           -> accept iff incoming > last applied
+else if event times differ           -> accept iff eventTime is after last applied
+else                                 -> accept iff receivedAt is not before last applied
 ```
+
+The third level was added in Stage 3. Its rationale and trade-off are in
+[event-processing.md](event-processing.md#5-event-ordering).
 
 A rejected event returns `false`. That is **not an error**: the event is still appended to tracking
 history, it just does not move `currentStatus`. This is exactly the scenario in the brief — an older
@@ -191,7 +224,17 @@ Why optimistic rather than `SELECT ... FOR UPDATE`:
   event), replaying it after a conflict produces the correct answer — the same property that makes
   the whole pipeline idempotent.
 
-Retry of the conflict is wired in Stage 3, where it belongs with the rest of the retry policy.
+The retry is bounded — `parcelflow.processing.max-optimistic-lock-retries`, default 3 — and each
+attempt runs in a **fresh** transaction. Both properties matter. An unbounded loop under sustained
+contention is a livelock that consumes a consumer thread forever; giving up hands the record back to
+the Kafka error handler, whose backoff spaces the next attempt out. And retrying inside the failed
+transaction would be a no-op, because the persistence context is already dead once
+`OptimisticLockingFailureException` is thrown — which is why the retry crosses a bean boundary from
+`TrackingEventProcessor` to `TrackingEventRecorder` rather than looping in place.
+
+What this protects against is not a single instance. Kafka keys every event by shipment id, so one
+parcel's events reach one consumer thread in order and cannot overlap. The contended case is two
+instances during a rebalance, one still holding a partition the other has been assigned.
 
 ---
 
@@ -207,14 +250,28 @@ One detail worth pointing out: `registerShipment` uses `saveAndFlush`, not `save
 constraint violation would surface outside the `try` block and the client would get a `500` instead
 of a `409`. Flushing inside the transaction puts the exception where it can be translated.
 
-Event ingestion has its own boundary in `TrackingEventProcessor.process`, which is one transaction
-covering the history insert and the shipment update together. There is no window in which a parcel
-shows a status that no stored event justifies. Both writes target the same database, so this needs
-no distributed coordination — the concrete payoff of the single-service decision in section 1.
+Event ingestion has its boundary in `TrackingEventRecorder.record`, which is one transaction
+covering the duplicate check, the history insert, the shipment update and the notification. There is
+no window in which a parcel shows a status that no stored event justifies, or a customer is notified
+about an event that was rolled back. All of it targets the same database, so this needs no
+distributed coordination — the concrete payoff of the single-service decision in section 1.
 
 The shipment is a managed entity inside that transaction, so `recordEvent` flushes on commit under
 `@Version` guard. There is no explicit `save` call for it and therefore no second write path to keep
 in sync.
+
+**Three things deliberately sit outside that transaction**, and each would be a bug inside it:
+
+| Work | Where | Why not inside |
+|---|---|---|
+| Optimistic-lock retry | `TrackingEventProcessor`, loop | The persistence context is dead once the exception is thrown; a retry needs a new transaction, and a `@Transactional` method cannot start one by calling itself. |
+| Duplicate detection on constraint violation | `TrackingEventProcessor`, catch | Hibernate marks the transaction rollback-only at flush; catching and continuing yields `UnexpectedRollbackException` at commit. |
+| Failed-event persistence | `FailedEventStore`, `REQUIRES_NEW` | It runs after the processing transaction rolled back. Joining it would delete the record of the failure along with the failure. |
+| Cache eviction | `ShipmentCacheInvalidator`, `AFTER_COMMIT` | Evicting mid-transaction lets a concurrent reader repopulate from pre-commit state, leaving an entry that is wrong and that nothing will evict again. |
+
+The manual retry flow is the same principle at a larger scale: claim, reprocess, record the outcome —
+three separately committing steps, because one transaction around all of them would roll back the
+retry-count increment whenever the retry failed, losing the record of the attempt.
 
 ---
 
@@ -308,3 +365,68 @@ package; never `*`.
 `ErrorHandlingDeserializer` wraps the JSON deserializer so an unparseable payload becomes a failed
 record the container can handle, rather than an exception inside the poll loop that stalls the
 partition forever.
+
+---
+
+## 10. Reliability
+
+### Idempotency
+
+Two layers. A pre-check inside the transaction handles the common redelivery cheaply; `UNIQUE
+(event_id)` handles the race the pre-check cannot, where two threads both read "not present". The
+loser's constraint violation is caught outside the transaction and turned into a successful no-op.
+
+The database constraint is the guarantee, not the pre-check. An in-memory set dies in exactly the
+crash that produces duplicates, and a Redis-based check has no atomicity with the PostgreSQL write —
+full reasoning in
+[event-processing.md](event-processing.md#why-an-in-memory-set-or-redis-only-idempotency-is-not-enough).
+
+Notifications get the same treatment through `UNIQUE (shipment_id, source_event_id)`.
+
+### Error classification
+
+`ErrorCategory` answers two independent questions per failure — is it worth retrying automatically,
+and could a human or a deploy make it succeed — and `ProcessingErrorClassifier` is the single source
+of truth. The Kafka error handler builds its not-retryable list from the same declaration the stored
+record and the manual retry endpoint classify against, so the three cannot drift apart. The full
+table is in [event-processing.md](event-processing.md#7-error-classification).
+
+### Dead letter flow
+
+Bounded exponential backoff with jitter for retryable failures; non-retryable ones skip the retries
+entirely. When the budget is gone, `FailedEventRecoverer` writes a `failed_events` row **first** and
+publishes to the DLT **second** — if the broker is what is broken, losing the explanation as well as
+the message is strictly worse than losing only the message. Neither step may throw: an exception from
+the recoverer makes the container retry the batch, and a poison record then stops the consumer for
+good.
+
+The topic and the table are complements. The topic holds the message and is what you replay in bulk;
+the row holds the explanation, the retry history and the workflow state.
+
+### Cache consistency
+
+PostgreSQL is the source of truth; Redis holds derived copies with a TTL. Eviction happens on
+`AFTER_COMMIT` and only for events that actually changed the shipment. Every cache operation is
+best-effort via a `CacheErrorHandler`, Redis is excluded from the readiness probe, and the cache can
+be switched off entirely with `parcelflow.cache.enabled=false` — which is how most of the test suite
+runs, and therefore the standing proof that correctness does not depend on it. Details in
+[event-processing.md](event-processing.md#9-redis-consistency-model).
+
+---
+
+## 11. Known limitations
+
+- **One consumer instance.** `concurrency: 3` gives one thread per partition within a single
+  instance. Processing is idempotent enough for a rebalance to be safe, but that is argued rather
+  than demonstrated: there is no multi-instance rebalance test.
+- **The event contract is declared twice**, once per module, deliberately — but the two copies are
+  kept in step by hand. A schema registry is the real fix.
+- **No bulk DLT replay.** Retry is one event at a time through the admin API.
+- **`/api/admin/**` is unauthenticated.** Out of MVP scope; the path prefix exists so the subtree can
+  be secured with one rule.
+- **`sequenceNumber` is trusted.** The fallback to `eventTime` handles a carrier omitting it, but not
+  a carrier resetting it mid-journey.
+- **The third ordering level depends on arrival order**, so two genuinely ambiguous events replayed
+  in the opposite order settle differently. Bounded by the `event_id` constraint, which excludes
+  exact replays.
+- **Notification records are never dispatched.** By design; nothing moves them out of `PENDING`.

@@ -72,6 +72,13 @@ public class Shipment {
     @Column(name = "last_sequence_number")
     private Long lastSequenceNumber;
 
+    /**
+     * When the most recently applied event was ingested. The third and final tie-breaker in the
+     * ordering rule, used only when sequence number and event time are both equal.
+     */
+    @Column(name = "last_received_at")
+    private Instant lastReceivedAt;
+
     @Version
     @Column(name = "version", nullable = false)
     private long version;
@@ -146,34 +153,57 @@ public class Shipment {
         if (currentStatus.isTerminal()) {
             return false;
         }
-        if (!isNewerThanApplied(eventTime, sequenceNumber)) {
+        if (!isNewerThanApplied(eventTime, sequenceNumber, now)) {
             return false;
         }
 
         this.currentStatus = status;
         this.lastEventTime = eventTime;
         this.lastSequenceNumber = sequenceNumber;
+        this.lastReceivedAt = now;
         this.updatedAt = now;
         return true;
     }
 
     /**
-     * Ordering rule: trust the carrier's per-shipment {@code sequenceNumber} when we have one to
-     * compare against, and fall back to {@code eventTime}.
+     * The ordering rule, in three levels. The first level that can decide, decides.
      *
-     * <p>Sequence numbers are preferred because they are integers assigned by the carrier in the
-     * order it observed the parcel, whereas event times come from scanners whose clocks drift and
-     * which sometimes report the same second for consecutive scans. Event time breaks ties when
-     * two events share a sequence number.
+     * <ol>
+     *   <li><b>{@code sequenceNumber}</b> — the carrier's per-shipment counter, assigned in the
+     *       order it observed the parcel. Preferred because it is an integer produced by one
+     *       system, whereas event times come from handheld scanners whose clocks drift.
+     *   <li><b>{@code eventTime}</b> — used when the sequence numbers are equal, which happens
+     *       when a carrier reuses a slot or omits the counter's meaning.
+     *   <li><b>{@code receivedAt}</b> — used when sequence number and event time are both equal.
+     *       The incoming event is being ingested now, so this always resolves in its favour:
+     *       last received wins.
+     * </ol>
+     *
+     * <p>The third level is the interesting one. Two <em>distinct</em> events sharing a sequence
+     * number and an event time are either carrier data corruption or a correction — a carrier
+     * re-reporting the same scan slot with a fixed status. Last-received-wins is the behaviour a
+     * correction needs, and it is deterministic given arrival order. The trade-off is that it is
+     * only deterministic given arrival order: two such events replayed in the opposite order would
+     * settle differently. That is acceptable because an exact replay of the same event is already
+     * excluded by the {@code event_id} uniqueness constraint, so this path is reachable only from
+     * genuinely different events the carrier failed to distinguish.
+     *
+     * <p>Note what this rule deliberately is <em>not</em>: a state machine over
+     * {@link ShipmentStatus}. Carriers legitimately move parcels backwards — a delivery attempt
+     * returns a parcel to a facility — and a transition table would reject those as invalid. The
+     * only status-based rule is terminality, applied by the caller.
      */
-    private boolean isNewerThanApplied(Instant eventTime, long sequenceNumber) {
+    private boolean isNewerThanApplied(Instant eventTime, long sequenceNumber, Instant receivedAt) {
         if (lastEventTime == null) {
             return true;
         }
         if (lastSequenceNumber != null && sequenceNumber != lastSequenceNumber) {
             return sequenceNumber > lastSequenceNumber;
         }
-        return eventTime.isAfter(lastEventTime);
+        if (!eventTime.equals(lastEventTime)) {
+            return eventTime.isAfter(lastEventTime);
+        }
+        return lastReceivedAt == null || !receivedAt.isBefore(lastReceivedAt);
     }
 
     /** Replaces the carrier's delivery estimate. */
@@ -216,6 +246,10 @@ public class Shipment {
 
     public Long getLastSequenceNumber() {
         return lastSequenceNumber;
+    }
+
+    public Instant getLastReceivedAt() {
+        return lastReceivedAt;
     }
 
     public long getVersion() {

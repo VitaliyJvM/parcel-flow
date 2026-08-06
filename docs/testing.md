@@ -7,10 +7,10 @@
 ./gradlew test
 ```
 
-Requires a running Docker daemon. Integration tests start real PostgreSQL 17 and Redpanda
+Requires a running Docker daemon. Integration tests start real PostgreSQL 17, Redpanda and Redis
 containers.
 
-**Stage 2: 109 tests, all passing** (35 from Stage 1, 74 added).
+**Stage 3: 198 tests, all passing** (109 from Stages 1–2, 89 added).
 
 ---
 
@@ -19,6 +19,11 @@ containers.
 **No context-loads test.** There is no `@Test void contextLoads() {}`. Every test asserts a
 behaviour. The Spring context is exercised as a side effect of tests that assert something real,
 which catches wiring breakage anyway.
+
+**The cache is off by default in tests.** `parcelflow.cache.enabled=false` in the test profile, so
+most tests need no Redis container — and, more usefully, the whole suite doubles as the standing
+proof that the service is correct with the cache disabled. The classes that assert caching behaviour
+turn it back on and pay for a container.
 
 **No mocked database, and no embedded broker.** The unique constraint, the `@Version` increment, and
 `ddl-auto: validate` against the Flyway schema cannot be verified against an in-memory database or a
@@ -231,3 +236,131 @@ The transport path end to end, with Awaitility polling for the asynchronous resu
 `src/test/resources/application-test.yml` keeps `ddl-auto: validate` in tests deliberately. Letting
 Hibernate create the schema in tests would mean the tests validate the entities against themselves
 and never against the migrations that actually run in production.
+
+---
+
+## Stage 3 tests
+
+### `ProcessingErrorClassifierTest` — 13 tests, no Spring
+
+The retry policy, pinned. Each category is tied to a concrete exception and each exception to a
+concrete answer about whether re-running it can help. Also covers unwrapping — a
+`ListenerExecutionFailedException` must be unwrapped to the failure that describes the problem, or
+every failure lands in `UNKNOWN` and the policy collapses into "never retry" — and a
+self-referential cause chain, which terminates rather than looping.
+
+One test asserts that every exception in the Kafka not-retryable list classifies as
+non-auto-retryable, so the error handler's skip list and the recorded category cannot drift apart.
+
+### `IdempotencyAndOrderingIntegrationTest` — 11 tests, real PostgreSQL
+
+| Group | Assertion |
+|---|---|
+| duplicates | the same event delivered three times stores one row and applies once |
+| duplicates | a redelivery does not bump `@Version`, so it cannot lose a concurrent update |
+| duplicates | a redelivery creates no second notification |
+| duplicates | the duplicate result reports the *stored* outcome and the *current* shipment status |
+| duplicates | two different event ids describing the same scan are **not** duplicates — that is a correction, and last-received-wins applies |
+| ordering | seq 40 arriving after seq 50 is stored `SUPERSEDED`; status, `lastEventTime` and `lastSequenceNumber` all stay put |
+| ordering | a stale milestone creates no notification |
+| ordering | same sequence with an older event time does not advance |
+| ordering | a newer sequence wins over an older carrier timestamp |
+| ordering | a whole journey delivered backwards ends correct, with exactly one applied event and one notification |
+| ordering | a delivered parcel ignores a late in-transit scan but still records it |
+
+### `ConcurrentProcessingIntegrationTest` — 3 tests, real PostgreSQL
+
+Drives the processor from eight threads released together by a `CyclicBarrier` — deterministic
+overlap, no sleeps. It has to bypass Kafka: partition keying means one parcel's events reach one
+consumer thread, so the broker *cannot* produce this situation. The real-world analogue is two
+instances mid-rebalance.
+
+- Eight distinct events all land, the highest sequence wins, and the shipment version equals the
+  number of applied events — no lost updates.
+- The same event from eight threads yields one stored row, one notification, and version 1. This is
+  the race the unique constraint exists for.
+- No thread exceeds the configured retry ceiling. The first two tests would pass with an unbounded
+  loop; this is what catches one.
+
+### `DeadLetterIntegrationTest` — 4 tests, real Redpanda + PostgreSQL
+
+- An unmappable carrier code is recorded with category, origin topic/partition/offset, exception type
+  and message — and **no stack trace** — then published to the DLT with the right headers.
+- A validation failure is classified separately, because the two need different fixes.
+- A poison record does not stall the partition; a later valid record still lands.
+- An event for an unknown shipment is classified `SHIPMENT_NOT_FOUND` and stays manually retryable,
+  which is what makes the admin endpoint useful once the parcel is registered.
+
+The DLT assertions read the exception *cause* header rather than the exception header: Spring records
+the listener wrapper in the latter. They also poll on the test thread rather than through Awaitility,
+because `KafkaConsumer` is explicitly not thread-safe.
+
+### `FailedEventApiIntegrationTest` — 10 tests
+
+| Case | Expected |
+|---|---|
+| listing | paginates, and exposes neither a stack trace nor the payload |
+| listing | filters by status |
+| unknown id | `404` problem+json |
+| retry a `VALIDATION` failure | `409` naming the category; the record is untouched, not consumed |
+| retry once the shipment exists | `200`, `RESOLVED`, event applied, shipment advanced |
+| retry an already-processed event | `200` reporting `duplicate: true` — still one history row |
+| a second concurrent retry | `409`; the claim is a genuine compare-and-set |
+| a retry that fails again | `FAILED`, retry count incremented, `firstFailedAt` preserved |
+| unparseable payload | `409`, and the record is released rather than stuck in `RETRYING` |
+| repeated failures | upsert onto one row rather than piling up |
+
+### `NotificationIntegrationTest` — 16 tests
+
+Parameterized over all five notifiable milestones and the three deliberately silent statuses. Also:
+a full journey produces exactly three notifications; the unique constraint rejects a second
+notification for the same `(shipment, source event)` even when the service check is bypassed; and the
+notifiable set is asserted to be exactly five, so adding one — which means starting to message
+customers — cannot happen as a side effect of an unrelated edit.
+
+### `ShipmentCacheIntegrationTest` — 6 tests, real Redis
+
+Hit, miss, invalidation after an applied event, no invalidation after a superseded one, 404s not
+cached, and a full round-trip of every field including `Instant` and `LocalDate`.
+
+Assertions go through the `CacheManager` and a `StringRedisTemplate`, not through response timing —
+"this was a cache hit" measured by latency is a coin flip on a loaded machine. Presence assertions use
+a bounded Awaitility wait, because the cache write is a separate round trip and the framework does not
+promise it is visible the instant the read returns.
+
+### `ShipmentCacheUnavailableIntegrationTest` — 3 tests
+
+The service with Redis pointed at a dead port — indistinguishable from an outage, and it does not
+disturb the shared container the way stopping it mid-suite would. Reads still return the right
+answer, a tracking event still commits when the eviction cannot reach Redis, and a whole journey
+processes normally. This is the test behind the claim that correctness does not depend on Redis.
+
+### Simulator tests — 26 tests, no Spring
+
+Every scenario's output shape, plus reproducibility: the same seed produces byte-identical events for
+all six scenarios, and different seeds produce different event ids. `DUPLICATE` is asserted to reuse
+the *same* `eventId` — a fresh id would be a different event describing the same scan, which is a
+different problem. `OUT_OF_ORDER` keeps the endpoints in place so the parcel must still finish
+`DELIVERED`.
+
+---
+
+## Coverage against the Stage 3 brief
+
+| Required test | Status |
+|---|---|
+| Duplicate event delivery | ✅ `IdempotencyAndOrderingIntegrationTest`, `ConcurrentProcessingIntegrationTest` |
+| Duplicate notification prevention | ✅ `IdempotencyAndOrderingIntegrationTest`, `NotificationIntegrationTest` |
+| Out-of-order history preservation | ✅ `IdempotencyAndOrderingIntegrationTest` (6 cases) |
+| Current status protection | ✅ same |
+| Optimistic-lock handling | ✅ `ConcurrentProcessingIntegrationTest` |
+| Retryable / non-retryable classification | ✅ `ProcessingErrorClassifierTest` |
+| Bounded Kafka retry | ✅ `DeadLetterIntegrationTest`; the bound itself in `ConcurrentProcessingIntegrationTest` |
+| DLT publishing | ✅ `DeadLetterIntegrationTest` |
+| Failed-event persistence | ✅ `DeadLetterIntegrationTest`, `FailedEventApiIntegrationTest` |
+| Manual failed-event retry | ✅ `FailedEventApiIntegrationTest` |
+| Redis cache hit and miss | ✅ `ShipmentCacheIntegrationTest` |
+| Cache invalidation | ✅ same |
+| Redis failure tolerance | ✅ `ShipmentCacheUnavailableIntegrationTest` |
+| Concurrent processing | ✅ `ConcurrentProcessingIntegrationTest` |
+| Simulator scenarios | ◐ generation and reproducibility unit-tested for all six; end-to-end through Kafka verified manually, not automated |

@@ -29,8 +29,8 @@ public record CarrierEventTopicProperties(
         @NotBlank String carrierTrackingEventsTopic,
 
         /*
-         * Dead letter topic. Created in Stage 2 so the topology is complete and operators can see
-         * it; nothing publishes to it until Stage 3 adds the retry and recovery policy.
+         * Dead letter topic. Receives records whose retries were exhausted, and records whose
+         * failure was never retryable in the first place.
          */
         @NotBlank String carrierTrackingEventsDltTopic) {
 }
