@@ -7,12 +7,20 @@ name: CI
 # What blocks a merge, and what does not:
 #
 #   build          BLOCKING   compile, Checkstyle, unit + integration tests, jar
+#                  ADVISORY   ...plus a SonarQube Cloud step, see below
 #   package        BLOCKING   Docker image build, Compose validation, k6 script parse
 #   dependencies   ADVISORY   OWASP Dependency-Check; only runs when an NVD_API_KEY secret exists
-#   sonar          ADVISORY   only runs when a SONAR_TOKEN secret exists
 #
-# The advisory jobs use continue-on-error deliberately and say so in their own comments. Nothing
-# that verifies correctness is allowed to be advisory.
+# The three jobs are independent and run in parallel; none of them needs another's output.
+#
+# Sonar is a step inside `build` rather than a job of its own. As a separate job it had to re-run
+# `test jacocoTestReport` to produce the coverage XML the scanner reads, which meant a second full
+# Testcontainers suite — Postgres, Redpanda and Redis — running concurrently with the first, to
+# compute a report `build` had already computed. As a step it consumes the reports that are already
+# on disk and runs `./gradlew sonar` alone.
+#
+# The advisory jobs and the advisory step use continue-on-error deliberately and say so in their own
+# comments. Nothing that verifies correctness is allowed to be advisory.
 
 on:
   push:
@@ -41,9 +49,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    # Read by the Sonar step at the end of this job. SONAR_TOKEN is a secret because it
+    # authenticates; the project key and organization are not secrets and are repository variables,
+    # which are visible in logs and settable without rotating anything. Declared at job level
+    # because GitHub evaluates a step's `if` before that step's own `env` block exists, so a
+    # step-scoped variable cannot be used to guard the step that defines it.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+      SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          # Sonar's new-code detection needs history; a shallow clone makes every line look new and
+          # attributes every existing issue to this run.
+          fetch-depth: 0
 
       - name: Set up JDK 25
         uses: actions/setup-java@v4
@@ -80,6 +102,22 @@ jobs:
 
       - name: Package
         run: ./gradlew bootJar
+
+      - name: SonarQube Cloud analysis
+        # Last, so it analyses a tree that has already compiled, passed style, passed its tests and
+        # produced a jar — and so the coverage XML it reads is the one the run above just wrote.
+        #
+        # `sonar` and nothing else. It has no task dependency on `test` or `jacocoTestReport`
+        # (see the comment in build.gradle), so adding either here would re-run the whole
+        # Testcontainers suite for a report that is already on disk.
+        #
+        # Skipped unless all three values are configured, so a fork — which receives neither
+        # secrets nor variables — does not get a red step for a server it cannot authenticate
+        # against. Advisory for the reason it always was: quality-gate thresholds nobody has tuned
+        # are not a merge gate.
+        if: env.SONAR_TOKEN != '' && env.SONAR_PROJECT_KEY != '' && env.SONAR_ORGANIZATION != ''
+        continue-on-error: true
+        run: ./gradlew sonar
 
       - name: Upload test and coverage reports
         # always(), so a failing build still publishes the report that explains why. Without this
@@ -214,44 +252,3 @@ jobs:
           path: build/reports/dependency-check/
           retention-days: 7
 
-  sonar:
-    name: SonarQube (advisory)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # Every step is a no-op unless a SONAR_TOKEN secret exists, so a fork or a fresh clone does not
-    # get a permanently red job for a server it has no access to. The guard is on the steps rather
-    # than the job because GitHub does not make the secrets context available to a job-level `if`.
-    # Advisory for the same reason as the scan above: quality-gate thresholds nobody has tuned are
-    # not a merge gate.
-    if: github.event_name != 'pull_request'
-    continue-on-error: true
-    env:
-      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-    steps:
-      - name: Check out
-        if: env.SONAR_TOKEN != ''
-        uses: actions/checkout@v4
-        with:
-          # Sonar's new-code detection needs history; a shallow clone makes every line look new.
-          fetch-depth: 0
-
-      - name: Set up JDK 25
-        if: env.SONAR_TOKEN != ''
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '25'
-
-      - name: Set up Gradle
-        if: env.SONAR_TOKEN != ''
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: true
-
-      - name: Analyse
-        if: env.SONAR_TOKEN != ''
-        # Coverage first: Sonar reads the JaCoCo XML report, and without a preceding test run the
-        # dashboard reports 0% coverage, which is worse than reporting none.
-        run: ./gradlew test jacocoTestReport sonar

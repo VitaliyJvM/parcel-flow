@@ -183,9 +183,14 @@ docker compose up -d postgres redpanda
 ./gradlew jacocoTestReport                # coverage, per module
 ./gradlew build                           # all of the above, plus the jars
 ./gradlew dependencyCheckAnalyze          # OWASP; slow without an NVD_API_KEY
+./scripts/run-sonar.sh                    # SonarQube Cloud; needs .env.sonar
 
 ./gradlew :tracking-service:test --tests '*IdempotencyAndOrdering*'   # one slice
 ```
+
+SonarQube Cloud analysis reads its configuration from `.env.sonar`, which is git-ignored. Copy
+`.env.sonar.example` to `.env.sonar` and fill in the three values; the template says where each one
+comes from. The script reuses the JaCoCo reports already on disk rather than re-running the suite.
 
 Requires a running Docker daemon: the integration tests start real PostgreSQL, Redpanda and Redis
 containers via Testcontainers. No mocked database and no embedded broker anywhere.

@@ -107,20 +107,45 @@ dependencyCheck {
 }
 
 /*
- * SonarQube Community Build.
+ * SonarQube Cloud.
  *
- * Configured here so `./gradlew sonar` works against a locally-run server without anyone having to
- * remember the property names. The host and token come from the environment; running Sonar is
- * optional and is not part of `check`.
+ * Every value that identifies a project or authenticates comes from the environment, so nothing
+ * here is specific to one account and no credential is in the repository. Locally those variables
+ * come from .env.sonar (git-ignored; copy .env.sonar.example); in CI they come from GitHub Actions
+ * secrets and variables. Run it with ./scripts/run-sonar.sh.
+ *
+ * `sonar` deliberately does not depend on `test` or `jacocoTestReport`. It consumes the XML report
+ * those tasks already wrote, so CI runs the suite exactly once and a local run reuses whatever is
+ * on disk. Wiring a dependency here would double every Testcontainers run.
  */
 sonar {
     properties {
-        property 'sonar.projectKey', 'parcelflow'
+        property 'sonar.projectKey', System.getenv('SONAR_PROJECT_KEY') ?: ''
+        property 'sonar.organization', System.getenv('SONAR_ORGANIZATION') ?: ''
         property 'sonar.projectName', 'ParcelFlow'
-        property 'sonar.host.url', System.getenv('SONAR_HOST_URL') ?: 'http://localhost:9000'
-        property 'sonar.token', System.getenv('SONAR_TOKEN') ?: ''
+        // Overridable only so a self-hosted instance stays possible; the default is the Cloud
+        // endpoint, and no locally-running server is required.
+        property 'sonar.host.url', System.getenv('SONAR_HOST_URL') ?: 'https://sonarcloud.io'
         property 'sonar.java.source', '25'
         // Generated reports, not sources. Coverage of a Gradle wrapper script is not a metric.
         property 'sonar.exclusions', '**/build/**,**/generated/**'
+        // Points Sonar at the reports `jacocoTestReport` already produces, one per module. Absolute
+        // paths because this is declared once at the root and read by every module.
+        property 'sonar.coverage.jacoco.xmlReportPaths',
+                subprojects.collect { module ->
+                    module.layout.buildDirectory
+                            .file('reports/jacoco/test/jacocoTestReport.xml').get().asFile.path
+                }.join(',')
+    }
+}
+
+// The token is read from the environment and set only when present, so it is never written into
+// the build script and an unauthenticated invocation fails with Sonar's own error rather than
+// sending an empty credential.
+if (System.getenv('SONAR_TOKEN')) {
+    sonar {
+        properties {
+            property 'sonar.token', System.getenv('SONAR_TOKEN')
+        }
     }
 }

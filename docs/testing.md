@@ -452,8 +452,40 @@ all three and can only be demonstrated where all three exist. Added:
 ./gradlew jacocoTestReport           # build/reports/jacoco/test/html/index.html per module
 ./gradlew build                      # compile + checkstyle + tests + jar, all of the above
 ./gradlew dependencyCheckAnalyze     # OWASP; slow without an NVD_API_KEY
-./gradlew sonar                      # needs a SonarQube server; see below
+./scripts/run-sonar.sh               # SonarQube Cloud; reads .env.sonar, see below
 ```
+
+### SonarQube Cloud
+
+Analysis runs against [SonarQube Cloud](https://sonarcloud.io); no locally-running server is needed.
+Everything that identifies or authenticates comes from the environment, so nothing account-specific
+is in the repository.
+
+Locally, copy the template and fill in the three values:
+
+```bash
+cp .env.sonar.example .env.sonar     # git-ignored; the template lists where each value comes from
+./scripts/run-sonar.sh
+```
+
+The script reads `.env.sonar` without executing it — it parses the file and assigns only the four
+keys it recognises, so a token containing shell metacharacters is data rather than a command — checks
+all three values are present, runs `test jacocoTestReport` **only** when a module has no coverage XML
+yet, then runs `sonar`. It never prints the token. `FORCE_TESTS=true` re-runs the suite anyway;
+`SKIP_TESTS=true` refuses to.
+
+In CI there is no `.env.sonar` — it is git-ignored and never reaches a runner. The `build` job takes
+`SONAR_TOKEN` from a GitHub Actions secret and `SONAR_PROJECT_KEY` / `SONAR_ORGANIZATION` from
+repository variables, and the step is skipped unless all three are set.
+
+**Why `sonar` is a step in `build` and not its own job.** As a separate job it had to run
+`test jacocoTestReport sonar`, because the scanner reads a JaCoCo XML report that only exists after
+the suite has run — so every push started a second full Testcontainers stack, in parallel with the
+first, to recompute a report `build` had already produced. The `sonar` task has no Gradle dependency
+on `test` or `jacocoTestReport`; it reads the XML off disk. Moving it into `build` after `bootJar`
+means the suite runs exactly once and the step is `./gradlew sonar` alone. `build` also checks out
+with `fetch-depth: 0`, because Sonar's new-code detection needs real history — from a shallow clone
+every line looks new.
 
 ### What blocks CI
 
@@ -466,10 +498,14 @@ all three and can only be demonstrated where all three exist. Added:
 | Compose config validation | **yes** | Cheap, and catches a broken demo before someone finds it live |
 | k6 script parse (`k6 inspect`) | **yes** | A syntax error should fail in seconds, not three minutes into a load test |
 | OWASP Dependency-Check | no — advisory, and skipped without an API key | See below |
-| SonarQube | no — advisory, and skipped without a token | See below |
+| SonarQube Cloud | no — advisory, and skipped unless configured | See below |
 
-Nothing that verifies correctness is advisory. `continue-on-error` appears exactly twice, on the two
-jobs above, and each carries a comment in `.github/workflows/ci.yml` explaining why.
+Nothing that verifies correctness is advisory. `continue-on-error` appears exactly twice — on the
+`dependencies` job and on the Sonar step inside `build` — and each carries a comment in
+`.github/workflows/ci.yml` explaining why.
+
+`build`, `package` and `dependencies` are independent and run in parallel; none consumes another's
+output, so a slow scan never delays the signal that the code compiles and passes its tests.
 
 **Why dependency scanning is advisory.** The NVD feed reports CVEs in transitive dependencies that a
 Spring Boot version bump resolves on Boot's own schedule. Blocking on those would mean either pinning
@@ -484,15 +520,16 @@ seconds. Seeding the vulnerability database takes roughly 150 paged requests, so
 finish inside a sensible timeout — and because a timeout is a *cancellation*, `actions/cache` never
 runs its save step, so the cached database stays empty and the next run starts from zero and dies in
 the same place. The job cannot bootstrap itself. Rather than leave a permanently cancelled check on
-every pull request, the steps are guarded on an `NVD_API_KEY` secret, the same way Sonar is guarded on
-`SONAR_TOKEN`. A key is free from
+every pull request, the steps are guarded on an `NVD_API_KEY` secret, the same way the Sonar step is
+guarded on its own configuration. A key is free from
 [nvd.nist.gov](https://nvd.nist.gov/developers/request-an-api-key); adding it as a repository secret
 is all that is needed to turn the job on. Locally the scan works without one — the wait is only paid
 once because the database persists in the Gradle user home.
 
-**Why Sonar is advisory.** It is skipped entirely unless a `SONAR_TOKEN` secret exists, so a fork does
-not get a permanently red job for a server it cannot reach. Quality-gate thresholds nobody has tuned
-are not a merge gate.
+**Why Sonar is advisory.** Quality-gate thresholds nobody has tuned are not a merge gate. The step is
+also skipped entirely unless `SONAR_TOKEN`, `SONAR_PROJECT_KEY` and `SONAR_ORGANIZATION` are all
+configured, so a fork — which receives neither secrets nor repository variables — does not get a
+permanently red step for an account it cannot authenticate against.
 
 ### Checkstyle: what is enforced, and what is not
 
@@ -524,17 +561,20 @@ warns is a style check nobody reads.
 `config/owasp/dependency-check-suppressions.xml` is empty, and the file explains what an entry has to
 say before it goes in.
 
-### Running SonarQube Community Build locally
+### Running Sonar locally
 
 ```bash
-docker run -d --name sonarqube -p 9000:9000 sonarqube:community
-# first login admin/admin, change the password, then create a token
-SONAR_TOKEN=<token> SONAR_HOST_URL=http://localhost:9000 ./gradlew test jacocoTestReport sonar
+cp .env.sonar.example .env.sonar     # fill in the three values, then:
+./scripts/run-sonar.sh
 ```
 
-Coverage first: Sonar reads the JaCoCo XML, and without a preceding test run the dashboard reports
-0%, which is worse than reporting nothing. SonarQube is not part of `check` and is not required to
-build the project.
+Analysis targets SonarQube Cloud, so there is no server to run. Coverage has to exist before the
+scanner runs — Sonar reads the JaCoCo XML, and with no report the dashboard shows 0%, which is worse
+than showing nothing — so the script produces it first if a module is missing one, and reuses it
+otherwise. `sonar` is not part of `check` and is not required to build the project.
+
+Analysing a self-hosted SonarQube Server instead is a matter of setting `SONAR_HOST_URL` in
+`.env.sonar`; the build only defaults to the Cloud endpoint.
 
 ### Coverage
 

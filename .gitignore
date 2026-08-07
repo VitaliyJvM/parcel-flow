@@ -56,3 +56,11 @@ performance/results/*
 
 # Keep the directory in Git
 !performance/results/.gitkeep
+
+# Local SonarQube Cloud credentials. Already covered by the `.env.*` rule above, but stated
+# explicitly because this one holds a token and a silent rule is easy to delete by accident.
+.env.sonar
+
+# The template is documentation, not a credential, and has to stay in Git — `.env.*` above would
+# otherwise ignore it too.
+!.env.sonar.example
