@@ -31,6 +31,15 @@ spring:
     # Redpanda's external listener. Overridden to redpanda:9092 inside Docker Compose.
     bootstrap-servers: localhost:19092
 
+    producer:
+      # The service is not a carrier and publishes no events of its own. This producer exists for
+      # the dead letter topic and for the load-testing endpoint, both of which hand Kafka an
+      # already-serialized string, so the value serializer is deliberately String rather than a
+      # JSON one: there is exactly one place where an event becomes bytes.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+
     consumer:
       group-id: ${parcelflow.kafka.consumer-group}
       # A new consumer group must not skip events that were published while the service was down.
@@ -59,6 +68,10 @@ spring:
     listener:
       # Commit the offset after each record's listener method returns normally.
       ack-mode: record
+      # Wrap each record in an Observation, so consuming an event produces a span with the same
+      # trace id as everything it calls into, and Micrometer times it. The producer side is off:
+      # nothing in this service publishes events on a hot path.
+      observation-enabled: true
       # One thread per partition. Safe now that processing is idempotent: a rebalance that
       # redelivers an uncommitted record is a duplicate, and a duplicate is a no-op. Events for one
       # parcel share a partition key, so they still reach one thread in order.
@@ -80,6 +93,22 @@ parcelflow:
     replication-factor: 1
     carrier-tracking-events-topic: carrier-tracking-events
     carrier-tracking-events-dlt-topic: carrier-tracking-events-dlt
+
+  metrics:
+    # Tags every meter, so one Prometheus and one dashboard can serve more than one deployment.
+    environment: local
+    # How often the backlog gauges re-count. Cheap enough at this scale to be well inside a
+    # Prometheus scrape interval, so the panels are never showing a value older than one scrape.
+    backlog-refresh-interval-ms: 15000
+
+  health:
+    # A readiness probe must answer inside the prober's deadline whatever the broker is doing.
+    kafka-timeout-ms: 1500
+
+  load-testing:
+    # The /internal/load/carrier-events endpoint. Off unless a load test is being run; see
+    # docs/performance-results.md. It publishes unauthenticated writes to the ingest topic.
+    enabled: false
 
   processing:
     # In-process retries of an optimistic-lock conflict, each in a fresh transaction.
@@ -112,22 +141,71 @@ management:
   endpoints:
     web:
       exposure:
+        # An allowlist, not a wildcard. env, configprops, beans, loggers, threaddump and heapdump
+        # are the endpoints worth attacking — they leak configuration including credentials, or let
+        # a caller change log levels and take a heap dump — and none of them are exposed here.
+        # Actuator still shares the API port in this local build; see docs/operations.md for what
+        # a real deployment would do instead.
         include: health,info,metrics,prometheus
+    jmx:
+      exposure:
+        # Nothing consumes actuator over JMX here, and an open JMX surface is one more thing to
+        # reason about.
+        exclude: "*"
   endpoint:
     health:
+      # Health details name the datasource, the broker's cluster id and the Redis version. Useful
+      # locally, and reconnaissance if this port were reachable from outside — which is the
+      # deployment decision documented in docs/operations.md, not something this file can fix.
       show-details: always
       group:
-        # Redis is deliberately absent from readiness. The service is correct without it — a cache
-        # outage degrades read latency, nothing else — so letting Redis fail the readiness probe
-        # would take a healthy instance out of rotation for a problem it can absorb. Redis still
-        # appears in /actuator/health so the outage is visible.
+        # The readiness policy, stated in one place:
+        #
+        #   PostgreSQL  required — it is the source of truth; without it no read and no write is
+        #               correct, so an instance that cannot reach it must leave the load balancer.
+        #   Kafka       required — consuming the topic is this service's primary job. An instance
+        #               that cannot reach the broker is not doing it, however healthy its HTTP
+        #               port looks.
+        #   Redis       NOT required — it is a read accelerator with a TTL and every value in it
+        #               is derived from PostgreSQL. A cache outage costs latency, never
+        #               correctness, so failing readiness on it would take a working instance out
+        #               of rotation for a problem it is designed to absorb. Redis still appears in
+        #               /actuator/health, so the outage is visible without being fatal.
         readiness:
-          include: readinessState, db
+          include: readinessState, db, kafka
+        # Liveness answers "should this process be killed and restarted", which is true only for
+        # states a restart can fix. A dependency being down is not one of them: restarting the
+        # process does not bring PostgreSQL back, it just removes the instance that would have
+        # recovered on its own the moment PostgreSQL returned.
         liveness:
           include: livenessState
   health:
     probes:
       enabled: true
+
+  metrics:
+    distribution:
+      # Server-side histograms rather than client-computed percentiles. A percentile calculated
+      # inside one JVM cannot be averaged with another JVM's, so client-side percentiles stop
+      # meaning anything the moment there are two instances; histogram buckets aggregate correctly
+      # and Grafana derives the quantile with histogram_quantile().
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        # Bucket boundaries chosen around the latency this API is expected to serve, so the
+        # quantiles near the SLO are interpolated over narrow buckets rather than wide ones.
+        http.server.requests: 25ms, 50ms, 100ms, 200ms, 500ms, 1s, 2s
+
+  observations:
+    key-values:
+      application: tracking-service
+
+  tracing:
+    sampling:
+      # Everything, because this is a local portfolio stack whose traffic is whatever a demo or a
+      # load test produces. A real deployment samples a small fraction and pays for the rest in
+      # metrics; see docs/operations.md.
+      probability: 1.0
 
 springdoc:
   api-docs:
@@ -138,3 +216,18 @@ springdoc:
 logging:
   level:
     ca.vm.parcelflow: DEBUG
+
+  # Structured logging is opt-in per environment rather than always on. A JSON line per log event
+  # is what a log store wants and what a human reading a console does not, so the format is left
+  # unset here (plain text) and switched on in Docker Compose, which is the environment that
+  # behaves like a deployment. Set LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs to turn it on anywhere.
+  #
+  # ECS rather than logstash or gelf: the field names are an actual published schema, so
+  # correlationId lands next to log.level and service.name in a shape a log store already knows how
+  # to index. MDC entries are rendered as top-level members; see LogContext for the field list.
+  structured:
+    ecs:
+      service:
+        name: ${spring.application.name}
+        version: 0.1.0
+        environment: ${parcelflow.metrics.environment:local}

@@ -40,3 +40,19 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### ParcelFlow ###
+# Load test output. Written by every k6 run, so the file in the working tree is whatever ran last;
+# the results worth keeping are transcribed into docs/performance-results.md with the environment
+# they came from.
+performance/results-delete/*
+!performance/results-delete/.gitkeep
+
+# OWASP Dependency-Check's local copy of the NVD database.
+dependency-check-data/
+
+# Generated performance-test artifacts
+performance/results/*
+
+# Keep the directory in Git
+!performance/results/.gitkeep

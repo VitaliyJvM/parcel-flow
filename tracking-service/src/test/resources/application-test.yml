@@ -1,4 +1,13 @@
 spring:
+  datasource:
+    hikari:
+      # Small on purpose. Every cached Spring context holds its own pool for the whole test run,
+      # and they all point at one PostgreSQL container: at the production pool size, the eighth
+      # context fails to start with "sorry, too many clients already". Nothing here is throughput
+      # bound.
+      maximum-pool-size: 5
+      minimum-idle: 1
+
   jpa:
     hibernate:
       # Still 'validate' in tests: a mismatch between a migration and an entity mapping should

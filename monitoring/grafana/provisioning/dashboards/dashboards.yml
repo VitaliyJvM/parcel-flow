@@ -1,0 +1,16 @@
+apiVersion: 1
+
+providers:
+  - name: parcelflow
+    orgId: 1
+    folder: ParcelFlow
+    type: file
+    # The dashboard JSON is the source of truth and lives in the repository. Edits made in the
+    # Grafana UI are overwritten on reload, which is the intended direction: a dashboard that only
+    # exists in someone's browser is not part of the project.
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,104 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+        "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+        "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  ParcelFlow style rules.
+
+  Small on purpose. Every rule here is either something a reviewer would otherwise have to say out
+  loud on a pull request, or something that has a real chance of being a bug. Rules that encode a
+  taste — brace placement, blank line counts, Javadoc on every method — are left out: they generate
+  hundreds of diffs that bury functional history, and the build gate stops being read.
+
+  Because the ruleset is small, violations fail the build rather than warn. See docs/testing.md.
+-->
+<module name="Checker">
+    <property name="severity" value="error"/>
+    <property name="fileExtensions" value="java"/>
+
+    <!-- Source files are UTF-8 and Unix-terminated; the .gitattributes file enforces the latter
+         on checkout, this catches a file that got in another way. -->
+    <module name="NewlineAtEndOfFile">
+        <property name="lineSeparator" value="lf"/>
+    </module>
+
+    <module name="FileTabCharacter"/>
+
+    <module name="LineLength">
+        <property name="max" value="120"/>
+        <!-- A URL or a package name in an import cannot be wrapped, so wrapping it is not a fix. -->
+        <property name="ignorePattern" value="^package .*|^import .*|https?://|@see |\{@link "/>
+    </module>
+
+    <module name="RegexpSingleline">
+        <property name="format" value="\s+$"/>
+        <property name="message" value="Trailing whitespace"/>
+    </module>
+
+    <module name="TreeWalker">
+
+        <!-- Imports. A star import makes it impossible to tell from the file which type a name
+             refers to, and an unused import is a leftover that survives refactoring. -->
+        <module name="AvoidStarImport"/>
+        <module name="UnusedImports">
+            <property name="processJavadoc" value="true"/>
+        </module>
+        <module name="RedundantImport"/>
+        <module name="CustomImportOrder">
+            <property name="customImportOrderRules"
+                      value="STATIC###THIRD_PARTY_PACKAGE"/>
+            <property name="sortImportsInGroupAlphabetically" value="true"/>
+            <property name="separateLineBetweenGroups" value="true"/>
+        </module>
+
+        <!-- Naming. Only the conventions that make a name's meaning readable at the call site. -->
+        <module name="PackageName"/>
+        <module name="TypeName"/>
+        <module name="MethodName"/>
+        <module name="MemberName"/>
+        <module name="ParameterName"/>
+        <module name="LocalVariableName"/>
+        <module name="StaticVariableName"/>
+        <module name="ConstantName">
+            <!-- `log` is allowed alongside SCREAMING_SNAKE. A static final Logger is a constant by
+                 the letter of the rule and a collaborator by every other measure, and SLF4J's own
+                 documentation, every Spring example and this codebase all spell it `log`.
+                 Renaming 16 loggers to LOG to satisfy a naming rule is the kind of churn this
+                 ruleset exists to avoid. -->
+            <property name="format" value="^(log|[A-Z][A-Z0-9]*(_[A-Z0-9]+)*)$"/>
+        </module>
+
+        <!-- Correctness-adjacent. Each of these has been an actual bug in somebody's codebase. -->
+        <module name="EmptyStatement"/>
+        <module name="EqualsHashCode"/>
+        <module name="StringLiteralEquality"/>
+        <module name="SimplifyBooleanExpression"/>
+        <module name="SimplifyBooleanReturn"/>
+        <module name="MissingOverride"/>
+        <module name="DefaultComesLast"/>
+        <module name="FallThrough"/>
+        <module name="IllegalCatch">
+            <!-- Catching Throwable or Error swallows OutOfMemoryError. The pipeline's deliberate
+                 catch-and-log sites all catch RuntimeException, which is allowed. -->
+            <property name="illegalClassNames" value="java.lang.Throwable, java.lang.Error"/>
+        </module>
+        <module name="NeedBraces"/>
+        <module name="OneTopLevelClass"/>
+        <module name="OuterTypeFilename"/>
+        <module name="UpperEll"/>
+        <module name="ModifierOrder"/>
+        <module name="ArrayTypeStyle"/>
+        <module name="FinalClass"/>
+        <module name="HideUtilityClassConstructor"/>
+
+        <!-- Lets a line be exempted with a comment, so a genuine exception is visible in the
+             source rather than buried in a suppressions file. -->
+        <module name="SuppressionCommentFilter"/>
+    </module>
+
+    <module name="SuppressionFilter">
+        <property name="file" value="${config_loc}/suppressions.xml"/>
+        <property name="optional" value="false"/>
+    </module>
+</module>

@@ -1,8 +1,8 @@
 package ca.vm.parcelflow.shipment.api;
 
+import ca.vm.parcelflow.shared.api.PageResponse;
 import ca.vm.parcelflow.shipment.ShipmentService;
 import ca.vm.parcelflow.shipment.domain.ShipmentStatus;
-import ca.vm.parcelflow.shared.api.PageResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;

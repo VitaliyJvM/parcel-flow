@@ -3,10 +3,18 @@
 > ParcelFlow is an independent portfolio and training project. It is not affiliated with or based on
 > proprietary systems from any delivery carriers or ecommerce retailers.
 
-This document covers what exists after Stage 3 and the decisions behind it. Sections marked
-*(planned)* describe committed design that later stages implement.
+This document covers what exists and the decisions behind it. Everything described here is
+implemented; where something is deliberately absent it says so.
 
-The event pipeline has its own document: [event-processing.md](event-processing.md).
+The event pipeline has its own document: [event-processing.md](event-processing.md). Running the
+system is [operations.md](operations.md). Measured behaviour under load is
+[performance-results.md](performance-results.md).
+
+Diagrams are in [section 12](#12-diagrams): system context, containers, and sequence diagrams for
+the successful, duplicate, out-of-order and dead-letter paths. Technology choices are argued in
+[section 13](#13-why-these-technologies), scaling in [section 14](#14-scaling),
+single points of failure in [section 15](#15-single-points-of-failure-in-the-local-environment), and
+the gap to a real deployment in [section 16](#16-what-would-change-in-a-production-deployment).
 
 ---
 
@@ -430,3 +438,415 @@ runs, and therefore the standing proof that correctness does not depend on it. D
   in the opposite order settle differently. Bounded by the `event_id` constraint, which excludes
   exact replays.
 - **Notification records are never dispatched.** By design; nothing moves them out of `PENDING`.
+
+---
+
+## 12. Diagrams
+
+### 12.1 System context
+
+Who talks to ParcelFlow, and about what.
+
+```mermaid
+graph TB
+    retailer["Retailer system<br/><i>registers parcels, lists its shipments</i>"]
+    customer["Customer-facing app<br/><i>reads status and history</i>"]
+    operator["Operator<br/><i>reviews failed events, triggers retries</i>"]
+    carrier["Delivery carriers<br/><i>publish scan events in their own vocabulary</i>"]
+
+    parcelflow["<b>ParcelFlow</b><br/>Shipment tracking event processor<br/><i>normalizes, orders, deduplicates,<br/>stores, notifies</i>"]
+
+    monitoring["Prometheus + Grafana<br/><i>scrapes metrics, evaluates alerts</i>"]
+
+    retailer -->|"HTTPS / JSON"| parcelflow
+    customer -->|"HTTPS / JSON"| parcelflow
+    operator -->|"HTTPS / JSON (admin)"| parcelflow
+    carrier -->|"Kafka events"| parcelflow
+    monitoring -.->|"scrapes /actuator/prometheus"| parcelflow
+
+    classDef external fill:#eef,stroke:#557,stroke-width:1px
+    classDef system fill:#dfe,stroke:#494,stroke-width:2px
+    class retailer,customer,operator,carrier,monitoring external
+    class parcelflow system
+```
+
+Carriers are simulated by `carrier-simulator`; there is no integration with any real carrier. The
+notification records ParcelFlow produces are never dispatched — nothing moves them out of `PENDING`,
+by design.
+
+### 12.2 Containers
+
+Everything that runs, and what each one is for.
+
+```mermaid
+graph TB
+    subgraph clients["Clients"]
+        client["Retailer / customer / operator"]
+        sim["carrier-simulator<br/><i>Java CLI, one-shot</i>"]
+        k6["k6 load test<br/><i>container, perf profile</i>"]
+    end
+
+    subgraph service["tracking-service — Spring Boot 4, Java 25"]
+        api["REST API<br/><i>shipment, history,<br/>notifications, admin</i>"]
+        consumer["Kafka listener<br/><i>3 threads, 1 per partition</i>"]
+        norm["Carrier normalizers<br/><i>one strategy per carrier</i>"]
+        notif["Notification rules"]
+        actuator["Actuator<br/><i>health, prometheus</i>"]
+    end
+
+    subgraph broker["Redpanda — Kafka API"]
+        topic[("carrier-tracking-events<br/>3 partitions, keyed by shipmentId")]
+        dlt[("carrier-tracking-events-dlt")]
+    end
+
+    pg[("PostgreSQL 17<br/><b>source of truth</b><br/>shipments · tracking_events<br/>notifications · failed_events")]
+    redis[("Redis 7<br/><i>optional read cache, TTL 5m</i>")]
+
+    prom["Prometheus<br/><i>scrape 5s, 10 alert rules</i>"]
+    graf["Grafana<br/><i>provisioned dashboard</i>"]
+
+    client -->|HTTP| api
+    k6 -->|HTTP| api
+    sim -->|produce| topic
+    k6 -.->|"HTTP publish<br/>(load-test endpoint,<br/>disabled by default)"| api
+    api -.->|publish| topic
+
+    topic --> consumer
+    consumer --> norm
+    consumer --> notif
+    consumer -->|"retries exhausted<br/>or permanently invalid"| dlt
+    consumer -->|"one local transaction"| pg
+    consumer -->|"evict AFTER_COMMIT"| redis
+    api --> pg
+    api <-->|"read-through"| redis
+
+    prom -->|scrape| actuator
+    graf --> prom
+
+    classDef store fill:#fef,stroke:#849
+    classDef obs fill:#ffe,stroke:#a94
+    class pg,redis,topic,dlt store
+    class prom,graf obs
+```
+
+### 12.3 A successful event
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Carrier
+    participant K as Kafka
+    participant L as Listener
+    participant P as Processor
+    participant R as Recorder<br/>(@Transactional)
+    participant DB as PostgreSQL
+    participant N as Notifications
+    participant Rd as Redis
+
+    C->>K: publish event (key = shipmentId)
+    K->>L: deliver record
+    L->>L: establish log context<br/>(correlationId, eventId, topic/partition/offset)
+    L->>P: process(message)
+    P->>P: start timer, count received
+    P->>R: record(message, attempt 1)
+
+    rect rgb(232, 245, 233)
+        note over R,N: one local transaction
+        R->>DB: SELECT by event_id — not found
+        R->>DB: SELECT shipment
+        R->>R: normalize carrier code -> status
+        R->>R: shipment.recordEvent(...) -> advanced
+        R->>DB: INSERT tracking_event (APPLIED)
+        R->>N: recordMilestone(...)
+        N->>DB: INSERT notification
+        R->>DB: UPDATE shipment (version + 1)
+    end
+
+    R-->>P: APPLIED
+    P->>P: count processed + applied, stop timer
+    P-->>L: result
+    L-->>K: return normally -> offset committed
+
+    note over Rd: after commit, on a separate listener
+    R->>Rd: EVICT shipment-tracking::{id}
+```
+
+The offset commits **after** the transaction. That ordering is the source of the duplicate case
+below, and it is the right way round: a duplicate is recoverable, a lost scan is not.
+
+### 12.4 A duplicate event
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as Kafka
+    participant P as Processor
+    participant R as Recorder
+    participant DB as PostgreSQL
+
+    note over K,P: the common case — redelivery after a crash or rebalance
+    K->>P: same eventId again
+    P->>R: record(message, attempt 1)
+    R->>DB: SELECT by event_id — FOUND
+    R-->>P: duplicate, no writes
+    P->>P: count duplicate (not a failure)
+    P-->>K: return normally -> offset committed
+
+    note over K,DB: the race the pre-check cannot cover
+    par thread A
+        P->>R: record(...)
+        R->>DB: SELECT by event_id — not found
+        R->>DB: INSERT tracking_event ✓
+    and thread B
+        P->>R: record(...)
+        R->>DB: SELECT by event_id — not found
+        R->>DB: INSERT tracking_event ✗
+        DB-->>R: UNIQUE (event_id) violated
+        R-->>P: DataIntegrityViolationException
+        note over P: caught OUTSIDE the transaction —<br/>it is already rollback-only
+        P->>R: record(...) again
+        R->>DB: SELECT by event_id — FOUND
+        R-->>P: duplicate
+    end
+```
+
+Two mechanisms, one guarantee: the pre-check is an optimisation, the constraint is the contract.
+
+### 12.5 An out-of-order event
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as Kafka
+    participant R as Recorder
+    participant S as Shipment aggregate
+    participant DB as PostgreSQL
+
+    note over S: current status OUT_FOR_DELIVERY, lastSequenceNumber = 7
+
+    K->>R: event seq = 4 (IN_TRANSIT), backfilled by the carrier
+    R->>DB: SELECT by event_id — not found
+    R->>DB: SELECT shipment
+    R->>S: recordEvent(IN_TRANSIT, eventTime, seq 4)
+    S->>S: 4 < 7 -> do not advance
+    S-->>R: false
+    R->>DB: INSERT tracking_event (SUPERSEDED)
+    note over R,DB: no shipment update,<br/>no notification, no cache eviction
+    R-->>K: stored, status unchanged
+
+    note over S: a terminal status behaves the same way
+    K->>R: event seq = 9 (IN_TRANSIT), after DELIVERED
+    R->>S: recordEvent(IN_TRANSIT, eventTime, seq 9)
+    S->>S: current status is terminal -> do not advance
+    S-->>R: false
+    R->>DB: INSERT tracking_event (SUPERSEDED)
+```
+
+The late event is kept because it is a real observation. What it does not get to do is move the
+parcel backwards, or notify a customer about a milestone their parcel passed hours ago.
+
+### 12.6 Retry and dead letter
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as Kafka
+    participant EH as DefaultErrorHandler
+    participant P as Processor
+    participant CL as ErrorClassifier
+    participant Rec as FailedEventRecoverer
+    participant DB as PostgreSQL
+    participant DLT as DLT topic
+    participant Op as Operator
+
+    K->>P: deliver record
+    P->>P: throws (e.g. ShipmentNotFoundException)
+    P->>CL: classify -> SHIPMENT_NOT_FOUND (auto-retryable)
+    P->>P: count failed{category}
+    P-->>EH: exception
+
+    loop bounded retries, exponential backoff with jitter
+        EH->>K: seek back, redeliver
+        K->>P: same record
+        P-->>EH: exception again
+    end
+
+    note over EH: a NON-retryable failure (VALIDATION,<br/>MALFORMED_PAYLOAD, ...) skips this loop entirely
+    EH->>Rec: recover(record, exception)
+
+    Rec->>Rec: establish log context
+    Rec->>DB: INSERT/UPDATE failed_events (payload, category, origin)
+    note over Rec,DB: database FIRST — if the broker is what is broken,<br/>losing the explanation too is strictly worse
+    Rec->>DLT: publish with origin headers
+    Rec->>Rec: count dlt
+    Rec-->>EH: never throws — a throw here stops the consumer
+
+    Op->>DB: GET /api/admin/failed-events
+    Op->>P: POST .../retry (only if the category allows it)
+    P->>DB: reprocess — idempotent, so a late success is safe
+```
+
+---
+
+## 13. Why these technologies
+
+The decisions that would be the first questions in a review.
+
+### Why a modular monolith
+
+Because the unit of work is one local transaction. Updating the shipment, appending history and
+creating the notification have to happen together; splitting them across processes replaces a
+`COMMIT` with a saga, an outbox and a set of compensating actions — a large amount of machinery
+bought with nothing, because all three writes target the same database anyway.
+
+The interesting problems in this domain are idempotency, ordering and concurrency. Distributing the
+system does not make them easier; it adds coordination code that buries them. What a modular
+monolith gives up is enforcement: module boundaries are conventions kept honest by package structure
+and dependency direction rather than by a network. The boundaries are drawn where a service boundary
+would go, so `notification` could be extracted if it ever earned its own deployment — and the fact
+that it does not call back into `tracking` is what keeps that possible.
+
+### Why Kafka (Redpanda locally)
+
+A carrier feed is a stream of facts about parcels, produced by systems that are not asking anything
+of us. That is a log, not a request:
+
+* **The consumer's availability is decoupled from the producer's.** A carrier publishing while
+  ParcelFlow is restarting must not lose scans. With `auto-offset-reset: earliest` and committed
+  group offsets, everything published during an outage is consumed afterwards.
+* **Per-key ordering is a first-class guarantee.** Keying by shipment id means one parcel's scans land
+  on one partition and reach one consumer in production order. A queue with competing consumers gives
+  no such guarantee, and ordering per parcel is exactly the guarantee this domain needs — global
+  ordering is neither needed nor affordable.
+* **Replay is possible.** Being able to reset a consumer group and reprocess is what makes debugging
+  an ingestion bug tractable, and it is only safe because processing is idempotent. The two
+  properties go together.
+* **Partitions are the scaling unit.** Throughput grows by adding partitions and consumers without
+  changing the processing model.
+
+**Redpanda in Compose and in tests**, not Apache Kafka: same protocol, same client library, same
+consumer semantics, one container, no ZooKeeper or KRaft bootstrap, about a one-second start. That
+makes a broker-backed integration test cheap enough to run on every build, and tests and the local
+stack exercise the same broker. Nothing in the code is Redpanda-specific.
+
+### Why PostgreSQL is the source of truth
+
+Because the guarantees this system makes are database guarantees:
+
+* **Transactions.** Three writes commit together or not at all.
+* **Unique constraints.** Idempotency is `UNIQUE (event_id)`. Notification-once is
+  `UNIQUE (shipment_id, source_event_id)`. Duplicate registration is
+  `UNIQUE (carrier_code, tracking_number)`. Every one of these holds under a race that application
+  code would lose.
+* **Optimistic locking.** A version column is what turns a lost update into a detected conflict.
+* **Durability.** A parcel scan that was acknowledged must survive a restart.
+
+Relational rather than document-oriented because the data is relational — shipments have events have
+notifications — and the queries are relational: a parcel's history ordered by sequence, a retailer's
+shipments filtered by status.
+
+### Why Redis is optional
+
+Because a cache that can take the service down is not a cache.
+
+Redis holds one thing: the tracking response for `GET /api/shipments/{id}`, derived entirely from a
+PostgreSQL row, with a five-minute TTL. It is never in the write path. Every operation is best-effort
+through a `CacheErrorHandler` that swallows and logs; Redis is excluded from readiness; the whole
+cache can be switched off with `parcelflow.cache.enabled=false`.
+
+That last one is the point. The claim "the service is correct without Redis" is only worth making if
+running it that way is a supported configuration — so most of the test suite runs with the cache
+disabled, and that is the standing proof rather than an assertion in a document. Stopping Redis in
+the running stack is [experiment 2](operations.md#experiment-2--stop-redis): readiness stays UP,
+reads stay correct, latency rises, and a counter makes the swallowed failures visible.
+
+---
+
+## 14. Scaling
+
+**The read path** is stateless: more instances behind a load balancer. Redis absorbs repeated reads
+of hot parcels; a read replica would take the history queries if they became the constraint.
+
+**The ingest path** scales by partitions. Events are keyed by shipment id, so consumers can be added
+up to the partition count without breaking per-parcel ordering. Today: three partitions, one
+instance, `concurrency: 3` — one thread per partition. The next step is more partitions than
+instances and instances that can come and go, which a rebalance makes safe *because* reprocessing is
+idempotent.
+
+Two caveats worth stating:
+
+* **Adding partitions to an existing topic re-maps keys.** A parcel mid-journey can move to a
+  different partition, so its in-flight events can be reordered relative to each other. The ordering
+  rules absorb that, which is a large part of why they exist rather than relying on partition order
+  alone.
+* **The multi-instance safety argument is argued, not demonstrated.** There is no rebalance test. It
+  is the first thing worth building next.
+
+**The write path** is the real ceiling: one transaction per applied event. The first move would be
+batching within a partition — several events for one parcel in one transaction — rather than a bigger
+database. Beyond that, partitioning `tracking_events` by time keeps the hot set small, since nobody
+queries last year's scans.
+
+**What does not scale by adding instances** is anything that assumes a single process. There is
+nothing like that here, which is the entire reason the idempotency guarantee lives in the database
+rather than in memory.
+
+Measured behaviour, and what it does and does not show, is in
+[performance-results.md](performance-results.md).
+
+---
+
+## 15. Single points of failure in the local environment
+
+Everything here is single-instance, because it is a laptop stack. Worth naming so nobody mistakes
+the topology for a design:
+
+| Component | Failure mode | Effect | Mitigated by |
+|---|---|---|---|
+| **PostgreSQL** (one container, one volume) | Down or corrupt | Total: no reads, no writes, ingest fails and retries | Nothing. Readiness reports DOWN; events are retried and then dead-lettered |
+| **Redpanda** (one broker, replication factor 1) | Down | No ingest; the API still serves reads | Nothing. Offsets survive, so consumption resumes; a lost volume loses unconsumed events |
+| **tracking-service** (one instance) | Down | Total | Nothing. Compose restarts it; in-flight records are redelivered |
+| **Redis** (one container, no persistence) | Down | Read latency only | **By design.** Excluded from readiness, best-effort operations, cache disable-able |
+| **Prometheus / Grafana** (one each) | Down | No metrics or dashboards; the service is unaffected | Nothing. Monitoring is not in the request path |
+| **Docker host** | Down | Everything | Nothing. It is one laptop |
+
+The only one of these that is *designed* to be tolerated is Redis, and that tolerance is real and
+verified. The rest are single instances because a portfolio stack that ran three brokers and a
+Patroni cluster would demonstrate Compose skills rather than design.
+
+---
+
+## 16. What would change in a production deployment
+
+Ordered by what would go first.
+
+**Availability and data.** PostgreSQL with a replica and automated failover, PITR backups with
+restores actually tested. A Kafka cluster with replication factor 3, `min.insync.replicas=2`, and a
+DLT with the same durability as the main topic. Several service instances across availability zones,
+behind a load balancer that consults the readiness probe.
+
+**Security.** Authentication and an operator role in front of `/api/admin/**`. TLS everywhere,
+including to the broker, with SASL. Secrets from a secret manager rather than a Compose file.
+Management endpoints on a port that is not publicly routed. A schema registry, so the event contract
+stops being two hand-synchronised copies.
+
+**Operations.** Alertmanager with routing, silences and an on-call rotation — rules with no receiver
+are documentation. A trace backend (OTLP to Tempo or Jaeger) with sampling well below 100%; today
+spans are created and dropped. Log shipping to something that indexes the ECS fields, with retention.
+Exporters for PostgreSQL, Redis and the broker, so the dashboard shows the dependencies and not only
+the application's view of them.
+
+**Capacity and cost.** Partition count sized from measured throughput rather than chosen. Connection
+pool sized against the database's real limit. Metric retention and cardinality budgeted; a histogram
+per outcome is cheap here and is not free at a thousand instances. Time-partitioned
+`tracking_events` with an archival policy.
+
+**Correctness at scale.** A multi-instance rebalance test in CI. Bulk DLT replay, because
+one-at-a-time retry does not survive an incident that dead-letters ten thousand events. A dispatcher
+that actually sends the notifications, with its own idempotency — sending is the part where
+at-least-once starts costing a customer something.
+
+Multi-region is a bigger question than any of these, and is answered honestly in the
+[interview guide](interview-guide.md#310-what-would-you-change-for-a-real-multi-region-production-system):
+the current design assumes one write region, and its guarantees — a local transaction, a unique
+constraint, an optimistic-locked row — are single-region reasoning.

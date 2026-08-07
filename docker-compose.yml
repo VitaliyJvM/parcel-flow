@@ -1,6 +1,12 @@
 name: parcelflow
 
-# Stage 3 environment: PostgreSQL, Redpanda, Redis, the tracking service and the carrier simulator.
+# The whole local environment: PostgreSQL, Redpanda, Redis, the tracking service, the carrier
+# simulator, and the Prometheus + Grafana monitoring stack.
+#
+# Two services sit behind profiles so `docker compose up` does not start them:
+#
+#   carrier-simulator   a one-shot CLI  ->  docker compose run --rm carrier-simulator ...
+#   k6                  the load test   ->  docker compose --profile perf run --rm k6 run /scripts/...
 
 services:
 
@@ -87,6 +93,25 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
+
+      # Structured JSON logs, one object per line, in Elastic Common Schema. Left unset in
+      # application.yml so a local `bootRun` stays human-readable; on in Compose because this is
+      # the environment that behaves like a deployment. Read them with:
+      #   docker compose logs -f tracking-service | jq -r 'select(.correlationId) | ...'
+      # Set to an empty value to get plain text back.
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ${LOG_FORMAT:-ecs}
+
+      # The load-testing publish endpoint. Off unless explicitly asked for:
+      #   PARCELFLOW_LOAD_TESTING_ENABLED=true docker compose up -d --force-recreate
+      # It accepts unauthenticated writes to the carrier events topic and exists only so the k6
+      # scenario can generate events at a rate a CLI cannot.
+      #
+      # The underscore between LOAD and TESTING matters. Relaxed binding has two different rules:
+      # @ConfigurationProperties binding accepts the dash-removed form (PARCELFLOW_LOADTESTING_...),
+      # but @ConditionalOnProperty resolves through the plain Environment, which maps a dash to an
+      # underscore instead. The dash-removed spelling sets an environment variable that nothing
+      # reads, the endpoint silently stays disabled, and the load test gets 404 on every publish.
+      PARCELFLOW_LOAD_TESTING_ENABLED: ${PARCELFLOW_LOAD_TESTING_ENABLED:-false}
     ports:
       - "8080:8080"
     healthcheck:
@@ -98,6 +123,85 @@ services:
       retries: 12
       start_period: 30s
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Seven days is far more than a demo needs and costs nothing on a laptop; it means a load
+      # test run yesterday is still there to compare against today's.
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      # started, not healthy: Prometheus should be up and recording the target as DOWN while the
+      # service starts. A monitoring system that waits for the thing it monitors cannot observe it
+      # failing to start, which is exactly when you want it.
+      tracking-service:
+        condition: service_started
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    environment:
+      # Anonymous access with the Admin role. This is a local demo stack with no data worth
+      # protecting and no ingress; requiring a login would only add a step between `up` and the
+      # dashboard. Anything reachable from outside a laptop would not be configured this way.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+      # Open straight on the provisioned dashboard rather than an empty home page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/parcelflow-overview.json
+      # No phoning home from a portfolio project.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
+
+  # The load test. A profile, because it runs to completion and must not be started by `up`.
+  #
+  #   PARCELFLOW_LOADTESTING_ENABLED=true docker compose up -d
+  #   docker compose --profile perf run --rm k6 run /scripts/parcelflow-load-test.js
+  #
+  # Running it in a container rather than from a local k6 install means the numbers come from the
+  # same generator on any machine, and that nobody has to install k6 to reproduce them.
+  k6:
+    profiles: [ "perf" ]
+    image: grafana/k6:0.57.0
+    volumes:
+      - ./performance/k6:/scripts:ro
+      - ./performance/results:/results
+    environment:
+      # Reaches the service over the Compose network, so the measurement does not include the
+      # host's port-forwarding hop.
+      BASE_URL: ${BASE_URL:-http://tracking-service:8080}
+      SHIPMENT_COUNT: ${SHIPMENT_COUNT:-200}
+      VIRTUAL_USERS: ${VIRTUAL_USERS:-20}
+      TEST_DURATION: ${TEST_DURATION:-2m}
+      EVENT_RATE: ${EVENT_RATE:-200}
+      EVENTS_PER_REQUEST: ${EVENTS_PER_REQUEST:-10}
+      DUPLICATE_PERCENTAGE: ${DUPLICATE_PERCENTAGE:-10}
+      OUT_OF_ORDER_PERCENTAGE: ${OUT_OF_ORDER_PERCENTAGE:-10}
+      K6_SUMMARY_EXPORT: ${K6_SUMMARY_EXPORT:-}
+    depends_on:
+      tracking-service:
+        condition: service_healthy
+    restart: "no"
 
   # A one-shot CLI, not a long-running service. It sits behind a profile so that
   # `docker compose up` does not start it, run it to completion, and then restart it forever.
@@ -119,3 +223,5 @@ services:
 volumes:
   postgres-data:
   redpanda-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!--
+      Accepted OWASP Dependency-Check exclusions.
+
+      Empty on purpose. Nothing has been suppressed, and nothing should be suppressed without a
+      note here saying which CVE, which dependency, and why it does not apply — "the build was
+      red" is not a reason. The scan is informational in CI (see build.gradle for why), so there
+      is never any pressure to silence a finding just to get a green tick.
+
+      The shape of an entry, for whoever needs the first one:
+
+      <suppress>
+          <notes>CVE-XXXX-NNNNN affects the servlet path of this library. ParcelFlow uses it only
+                 for <specific thing>, which does not reach that code. Reassess on the next
+                 Spring Boot upgrade.</notes>
+          <packageUrl regex="true">^pkg:maven/group/artifact@.*$</packageUrl>
+          <cve>CVE-XXXX-NNNNN</cve>
+      </suppress>
+    -->
+
+</suppressions>

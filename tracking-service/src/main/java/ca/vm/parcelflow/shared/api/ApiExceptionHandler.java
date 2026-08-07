@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Translates exceptions into RFC 9457 {@code application/problem+json} responses.
@@ -187,6 +188,21 @@ public class ApiExceptionHandler {
                 "Parameter '%s' has an invalid value".formatted(e.getName()), "malformed-request");
         problem.setProperty("errors", Map.of(e.getName(), "is not a valid value"));
         return problem;
+    }
+
+    /**
+     * A request for a path this service does not serve.
+     *
+     * <p>Without this, the catch-all below turns every unmatched path into a 500 — which is wrong
+     * for the client, who is told the server broke when in fact the URL does not exist, and worse
+     * for operations: a bot walking {@code /actuator/env}, {@code /.env} and {@code /wp-login.php}
+     * produces a stream of ERROR lines with stack traces, and the error rate that alerts fire on
+     * starts tracking internet background noise instead of this service's health.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ProblemDetail handleNoResourceFound(NoResourceFoundException e) {
+        return problem(HttpStatus.NOT_FOUND, "Not found",
+                "No endpoint is mapped to this path", "not-found");
     }
 
     /**

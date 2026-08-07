@@ -37,11 +37,15 @@ public class NotificationService {
 
     private final NotificationRepository notificationRepository;
     private final ShipmentService shipmentService;
+    private final NotificationMetrics metrics;
 
     public NotificationService(
-            NotificationRepository notificationRepository, ShipmentService shipmentService) {
+            NotificationRepository notificationRepository,
+            ShipmentService shipmentService,
+            NotificationMetrics metrics) {
         this.notificationRepository = notificationRepository;
         this.shipmentService = shipmentService;
+        this.metrics = metrics;
     }
 
     /**
@@ -60,6 +64,7 @@ public class NotificationService {
 
         Optional<NotificationType> type = NotificationType.forStatus(status);
         if (type.isEmpty()) {
+            metrics.notificationSkipped(NotificationMetrics.SkipReason.NOT_NOTIFIABLE);
             return Optional.empty();
         }
 
@@ -67,12 +72,19 @@ public class NotificationService {
         // (shipment_id, source_event_id): two consumer threads racing on a redelivered event both
         // pass this check, and the constraint is what stops the second insert.
         if (notificationRepository.existsByShipmentIdAndSourceEventId(shipmentId, sourceEventId)) {
+            metrics.notificationSkipped(NotificationMetrics.SkipReason.ALREADY_EXISTS);
             log.debug("Notification already exists for shipment {} event {}", shipmentId, sourceEventId);
             return Optional.empty();
         }
 
         Notification notification =
                 notificationRepository.save(Notification.forEvent(shipmentId, sourceEventId, type.get(), now));
+
+        // Counted before the transaction commits, so a rolled-back transaction leaves the counter
+        // one ahead of the table. Deliberate: the alternative is an after-commit hook that would
+        // couple the rule engine to transaction synchronization for a counter, and the rollback
+        // case is itself counted as a processing failure.
+        metrics.notificationCreated(type.get());
 
         log.info("Created {} notification for shipment {} from event {}",
                 type.get(), shipmentId, sourceEventId);

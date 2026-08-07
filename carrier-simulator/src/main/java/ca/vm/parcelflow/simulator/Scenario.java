@@ -1,7 +1,7 @@
 package ca.vm.parcelflow.simulator;
 
-import java.util.Locale;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * What the simulator publishes.

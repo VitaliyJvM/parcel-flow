@@ -10,7 +10,7 @@
 Requires a running Docker daemon. Integration tests start real PostgreSQL 17, Redpanda and Redis
 containers.
 
-**Stage 3: 198 tests, all passing** (109 from Stages 1–2, 89 added).
+**226 tests, all passing** (198 from Stages 1–3, 28 added in Stage 4).
 
 ---
 
@@ -109,7 +109,7 @@ Real controller, real bean validation, real Jackson 3, real PostgreSQL.
 The registration test also asserts the response body contains neither `customerId` nor its value,
 enforcing the write-only rule at the contract level.
 
-### `OperationalEndpointsIntegrationTest` — 4 tests
+### `OperationalEndpointsIntegrationTest` — 4 tests at Stage 1, 11 now
 
 Guards the surfaces that break silently during dependency upgrades:
 
@@ -364,3 +364,192 @@ different problem. `OUT_OF_ORDER` keeps the endpoints in place so the parcel mus
 | Redis failure tolerance | ✅ `ShipmentCacheUnavailableIntegrationTest` |
 | Concurrent processing | ✅ `ConcurrentProcessingIntegrationTest` |
 | Simulator scenarios | ◐ generation and reproducibility unit-tested for all six; end-to-end through Kafka verified manually, not automated |
+
+
+---
+
+## Stage 4 tests
+
+### `TrackingEventMetricsTest` — 9 tests, no Spring
+
+The meter contract, against a `SimpleMeterRegistry`. Metric names are an interface: a dashboard
+panel, an alert rule and a runbook all name them as strings, and none of those break at compile time,
+so a rename that looks like a harmless tidy-up silently blanks a panel and disarms an alert. These
+tests spell the names out so the rename has to be deliberate.
+
+Also asserts the two properties that are easy to get wrong and invisible when wrong:
+
+* **Every meter is registered before anything is processed**, including one failure series per error
+  category. A `rate()` over a series that does not exist yet returns no data, which on a dashboard is
+  indistinguishable from a broken query.
+* **No meter carries an unbounded tag** — not `shipmentId`, `eventId`, `trackingNumber` or
+  `correlationId`. Walks every registered meter and checks the tag keys, so a future meter cannot
+  quietly introduce one.
+
+And the counting model: `processed = applied + out_of_order + duplicate`, a duplicate is not a
+failure, and a failure is not processed.
+
+### `EventProcessingMetricsIntegrationTest` — 7 tests, real PostgreSQL
+
+The same meters, driven by the real pipeline, plus the thing a unit test cannot check: what
+`/actuator/prometheus` actually exposes. Micrometer rewrites dots to underscores and appends `_total`
+to counters and `_seconds` to timers, so the string a Grafana panel needs is never the string the
+Java code declares. Asserting the exported text is the only way to know the two agree — and it is
+what caught `parcelflow.notifications.created` being exposed as `parcelflow_notifications_total`,
+because `_created` is a reserved OpenMetrics suffix that the client strips.
+
+Also asserts the histogram buckets exist (without them `histogram_quantile()` has nothing to work
+with and every latency panel is empty), that the common tags are applied, and that no shipment id
+appears anywhere in the scrape output.
+
+Deltas rather than absolute values throughout: the meter registry belongs to a Spring context the
+test framework caches and shares, so a counter's absolute value depends on what ran before it.
+
+### `CacheMetricsIntegrationTest` — 2 tests, real Redis
+
+Hits, misses and puts against a real cache. These are Micrometer's built-in meters rather than
+counters this project declares, which is the point: they report zero forever unless
+`RedisCacheManager` is built with `enableStatistics()`. A dashboard showing a cache with no traffic
+looks like a quiet system rather than a broken instrument, and nothing else would catch it.
+
+The assertions check direction, not exact counts — one `@Cacheable` invocation does not map to
+exactly one Redis `GET`, and pinning the number would be asserting a Spring implementation detail.
+
+### `CarrierEventLoadControllerIntegrationTest` — 3 tests, real Redpanda + PostgreSQL
+
+The load-testing publish endpoint, enabled by a test property. Worth testing because the k6 scenario
+depends on it end to end: a performance number produced by an unverified harness is worse than no
+number, and if this endpoint dropped records or keyed them wrongly the load test would still report a
+throughput. Asserts that a posted event reaches PostgreSQL through the real broker and consumer, that
+a batch publishes every element, and that an invalid payload is forwarded unchanged so the dead
+letter path can be load tested.
+
+### `OperationalEndpointsIntegrationTest` — extended from 4 to 11 tests, full stack
+
+Now runs against PostgreSQL, Redpanda **and** Redis, because the readiness policy is a claim about
+all three and can only be demonstrated where all three exist. Added:
+
+* Readiness contains `db` and `kafka` and **not** `redis` — with Redis still visible in
+  `/actuator/health`, so the outage would not be invisible.
+* Liveness contains no dependency at all: a restart does not fix a database that is down, and putting
+  a dependency in liveness turns an infrastructure blip into a restart storm.
+* The Kafka contributor reports the cluster it reached.
+* `env`, `configprops`, `beans`, `loggers`, `threaddump`, `heapdump`, `mappings` and `shutdown` all
+  return 404. The exposure allowlist is a security decision, so it gets a test.
+* A caller's `X-Correlation-Id` is propagated and echoed back, including on an error response.
+* A request without one is given one.
+* The load-testing endpoint is **not** exposed by default.
+
+---
+
+## Stage 4 quality gates
+
+### Running the checks locally
+
+```bash
+./gradlew test                       # unit + integration, needs Docker
+./gradlew checkstyleMain checkstyleTest
+./gradlew jacocoTestReport           # build/reports/jacoco/test/html/index.html per module
+./gradlew build                      # compile + checkstyle + tests + jar, all of the above
+./gradlew dependencyCheckAnalyze     # OWASP; slow without an NVD_API_KEY
+./gradlew sonar                      # needs a SonarQube server; see below
+```
+
+### What blocks CI
+
+| Check | Blocking | Why |
+|---|---|---|
+| Compilation | **yes** | |
+| Checkstyle | **yes** | The ruleset is small enough that enforcing it is reasonable |
+| Unit and integration tests | **yes** | |
+| Jar and Docker image build | **yes** | The image builds from a different context and JDK image than the Gradle build, so it can break independently |
+| Compose config validation | **yes** | Cheap, and catches a broken demo before someone finds it live |
+| k6 script parse (`k6 inspect`) | **yes** | A syntax error should fail in seconds, not three minutes into a load test |
+| OWASP Dependency-Check | no — advisory | See below |
+| SonarQube | no — advisory, and skipped without a token | See below |
+
+Nothing that verifies correctness is advisory. `continue-on-error` appears exactly twice, on the two
+jobs above, and each carries a comment in `.github/workflows/ci.yml` explaining why.
+
+**Why dependency scanning is advisory.** The NVD feed reports CVEs in transitive dependencies that a
+Spring Boot version bump resolves on Boot's own schedule. Blocking on those would mean either pinning
+versions Boot has not adopted, or adding a suppression to get a green tick — and a suppression added
+under time pressure is never revisited. Dependency-Check also produces false positives on shaded jars
+at a rate that would train everyone to ignore the job. The report is published as a build artifact
+and is meant to be read. For a system handling real customer data the right answer is a blocking scan
+with a triaged suppression file and an owner.
+
+**Why Sonar is advisory.** It is skipped entirely unless a `SONAR_TOKEN` secret exists, so a fork does
+not get a permanently red job for a server it cannot reach. Quality-gate thresholds nobody has tuned
+are not a merge gate.
+
+### Checkstyle: what is enforced, and what is not
+
+Deliberately small. Every rule is either something a reviewer would otherwise have to say out loud,
+or something with a real chance of being a bug: star and unused imports, import order, naming, empty
+statements, `equals`/`hashCode` pairing, string comparison with `==`, missing `@Override`, missing
+braces, `catch (Throwable)`, utility-class constructors, line length 120, trailing whitespace.
+
+Left out on purpose: brace placement, blank-line counts, mandatory Javadoc, whitespace-around
+operators. Those generate hundreds of diffs that bury functional history, and a formatting sweep that
+large makes every subsequent `git blame` useless. Applying Stage 4's ruleset required **four** source
+changes across the existing codebase — three import reorderings and one wrapped line — which is the
+budget a style gate should cost when it is introduced late.
+
+Because the ruleset is small, violations fail the build (`maxWarnings = 0`). A style check that only
+warns is a style check nobody reads.
+
+**Accepted exclusions** (`config/checkstyle/suppressions.xml`, each with its reason in the file):
+
+* `CustomImportOrder` off for test sources. Test classes import assertion and request-builder statics
+  in bulk, which is the idiom those libraries are designed around.
+* `HideUtilityClassConstructor` off for the two Spring Boot entry-point classes. They look like
+  utility classes but are also configuration classes Spring instantiates; the private constructor the
+  rule asks for would stop the application from starting.
+* `ConstantName` accepts `log` alongside `SCREAMING_SNAKE`. A static final `Logger` is a constant by
+  the letter of the rule and a collaborator by every other measure. Renaming sixteen loggers to `LOG`
+  is exactly the churn this ruleset exists to avoid.
+
+`config/owasp/dependency-check-suppressions.xml` is empty, and the file explains what an entry has to
+say before it goes in.
+
+### Running SonarQube Community Build locally
+
+```bash
+docker run -d --name sonarqube -p 9000:9000 sonarqube:community
+# first login admin/admin, change the password, then create a token
+SONAR_TOKEN=<token> SONAR_HOST_URL=http://localhost:9000 ./gradlew test jacocoTestReport sonar
+```
+
+Coverage first: Sonar reads the JaCoCo XML, and without a preceding test run the dashboard reports
+0%, which is worse than reporting nothing. SonarQube is not part of `check` and is not required to
+build the project.
+
+### Coverage
+
+JaCoCo runs with the tests and reports per module. There is no coverage threshold, deliberately: a
+percentage gate on a codebase where the valuable tests are integration tests measures how much
+framework code got executed. The report is for reading, and the question worth asking of it is which
+*branches* are untested, not what the number is.
+
+---
+
+## Coverage against the Stage 4 brief
+
+| Required | Status |
+|---|---|
+| Custom meters registered and incremented | ✅ `TrackingEventMetricsTest`, `EventProcessingMetricsIntegrationTest` |
+| Exported Prometheus names match what dashboards query | ✅ `EventProcessingMetricsIntegrationTest` |
+| Metric label cardinality bounded | ✅ asserted in both, against the registry and the scrape output |
+| Cache metrics | ✅ `CacheMetricsIntegrationTest` |
+| Backlog gauges | ✅ `EventProcessingMetricsIntegrationTest` |
+| Notification metrics | ✅ `EventProcessingMetricsIntegrationTest` |
+| Readiness reflects the documented policy | ✅ `OperationalEndpointsIntegrationTest` |
+| Liveness independent of dependencies | ✅ same |
+| Sensitive actuator endpoints not exposed | ✅ same |
+| Correlation id propagated and generated | ✅ same |
+| Load-test endpoint disabled by default | ✅ same |
+| Load-test endpoint works when enabled | ✅ `CarrierEventLoadControllerIntegrationTest` |
+| Structured JSON log fields | ◐ verified by hand against the running stack (see [operations.md](operations.md#5-structured-logging)); not asserted by a test, because asserting on an appender's output tests Boot's formatter rather than this code |
+| Resilience experiments | ◐ documented and reproducible in [operations.md](operations.md#6-resilience-verification); run by hand, not automated |
+| Load test | ◐ the harness is tested; the run itself is manual, with results in [performance-results.md](performance-results.md) |

@@ -31,7 +31,8 @@ public record FailedEventResponse(
         @Schema(description = "Whether POST .../retry will accept this event")
         boolean retryableManually,
 
-        @Schema(description = "Exception class name", example = "ca.vm.parcelflow.tracking.InvalidCarrierEventException")
+        @Schema(description = "Exception class name",
+                example = "ca.vm.parcelflow.tracking.InvalidCarrierEventException")
         String errorType,
 
         @Schema(description = "Exception message, truncated. No stack trace.")

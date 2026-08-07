@@ -2,10 +2,20 @@ plugins {
     // Declared here so subprojects can apply them without repeating versions.
     id 'org.springframework.boot' version '4.1.0' apply false
     id 'io.spring.dependency-management' version '1.1.7' apply false
+    // Quality gates. Applied where they are needed rather than to every project blindly:
+    // dependency-check and Sonar aggregate at the root, Checkstyle and JaCoCo run per module.
+    id 'org.owasp.dependencycheck' version '12.1.0'
+    id 'org.sonarqube' version '6.0.1.5171'
+}
+
+ext {
+    checkstyleToolVersion = '10.21.0'
 }
 
 subprojects {
     apply plugin: 'java'
+    apply plugin: 'checkstyle'
+    apply plugin: 'jacoco'
 
     group = 'ca.vm'
     version = '0.1.0-SNAPSHOT'
@@ -32,5 +42,82 @@ subprojects {
             events 'passed', 'skipped', 'failed'
             exceptionFormat = 'full'
         }
+        // The coverage report is only useful if it covers the run that just happened.
+        finalizedBy tasks.named('jacocoTestReport')
+    }
+
+    checkstyle {
+        toolVersion = rootProject.ext.checkstyleToolVersion
+        configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+        configDirectory = rootProject.file('config/checkstyle')
+        // A violation fails the build. A style check that only warns is a style check nobody runs:
+        // the warnings scroll past, the count grows, and the rule stops meaning anything. The
+        // ruleset is deliberately small so that this is a reasonable thing to enforce.
+        ignoreFailures = false
+        maxWarnings = 0
+    }
+
+    jacoco {
+        toolVersion = '0.8.13'
+    }
+
+    tasks.named('jacocoTestReport') {
+        dependsOn tasks.named('test')
+        reports {
+            // Sonar reads the XML; the HTML is for a human looking at one module.
+            xml.required = true
+            html.required = true
+        }
+    }
+}
+
+/*
+ * OWASP Dependency-Check.
+ *
+ * Informational in CI, not a gate. Two honest reasons: the NVD feed reports vulnerabilities in
+ * transitive dependencies that a Spring Boot version bump fixes on its own schedule, and the
+ * analyzer's false-positive rate on shaded jars is high enough that a hard failure would train
+ * people to add suppressions without reading them. The report is published as a build artifact and
+ * the suppression file documents every exclusion.
+ */
+dependencyCheck {
+    formats = ['HTML', 'JSON']
+    outputDirectory = layout.buildDirectory.dir('reports/dependency-check').get().asFile.path
+    suppressionFile = file('config/owasp/dependency-check-suppressions.xml')
+    // Without a key the NVD API is rate-limited to the point of taking tens of minutes. Read from
+    // the environment so the key is never in the repository.
+    nvd {
+        apiKey = System.getenv('NVD_API_KEY')
+        delay = System.getenv('NVD_API_KEY') ? 1000 : 8000
+    }
+    analyzers {
+        // Nothing in this project is Node, .NET, Ruby or Swift. Leaving those analyzers on costs
+        // minutes per run and finds nothing.
+        assemblyEnabled = false
+        nodeAudit { enabled = false }
+        nodeEnabled = false
+        retirejs { enabled = false }
+    }
+    // Reported but not enforced; see the comment above.
+    failBuildOnCVSS = 11
+    skipConfigurations = ['checkstyle', 'jacocoAgent', 'jacocoAnt']
+}
+
+/*
+ * SonarQube Community Build.
+ *
+ * Configured here so `./gradlew sonar` works against a locally-run server without anyone having to
+ * remember the property names. The host and token come from the environment; running Sonar is
+ * optional and is not part of `check`.
+ */
+sonar {
+    properties {
+        property 'sonar.projectKey', 'parcelflow'
+        property 'sonar.projectName', 'ParcelFlow'
+        property 'sonar.host.url', System.getenv('SONAR_HOST_URL') ?: 'http://localhost:9000'
+        property 'sonar.token', System.getenv('SONAR_TOKEN') ?: ''
+        property 'sonar.java.source', '25'
+        // Generated reports, not sources. Coverage of a Gradle wrapper script is not a metric.
+        property 'sonar.exclusions', '**/build/**,**/generated/**'
     }
 }

@@ -1,0 +1,240 @@
+name: CI
+
+# What this pipeline is for: proving that a clean checkout compiles, passes style, passes every
+# test including the ones that start real PostgreSQL, Redpanda and Redis containers, and produces
+# a runnable jar and a working image.
+#
+# What blocks a merge, and what does not:
+#
+#   build          BLOCKING   compile, Checkstyle, unit + integration tests, jar
+#   package        BLOCKING   Docker image build, Compose validation, k6 script parse
+#   dependencies   ADVISORY   OWASP Dependency-Check (see the job for why)
+#   sonar          ADVISORY   only runs when a SONAR_TOKEN secret exists
+#
+# The advisory jobs use continue-on-error deliberately and say so in their own comments. Nothing
+# that verifies correctness is allowed to be advisory.
+
+on:
+  push:
+    branches: [ main, 'stage*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# A new push to the same branch cancels the run already in flight. Two runs of a Testcontainers
+# suite on the same branch tell you the same thing and cost twice as much.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  build:
+    name: Compile, style, tests, jar
+    # ubuntu-latest ships a running Docker daemon, which is what Testcontainers needs. The tests
+    # are not mocked: they start postgres:17-alpine, redpandadata/redpanda and redis:7-alpine.
+    # Nothing extra has to be configured for that — no service containers, no DinD — because
+    # Testcontainers talks to the host daemon over its socket.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        # Caches the Gradle distribution, the dependency cache and the build cache, keyed on the
+        # build scripts and lockfiles. (The brief asks for Maven caching; this project is Gradle,
+        # so this is the equivalent.) Writes the cache only from the default branch, so a pull
+        # request cannot poison it.
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Compile
+        run: ./gradlew compileJava compileTestJava
+
+      - name: Checkstyle
+        # A separate step from the tests so a style failure is legible in the job list rather than
+        # buried in a `build` task that also ran 226 tests.
+        run: ./gradlew checkstyleMain checkstyleTest
+
+      - name: Tests
+        # Unit and integration tests in one run: the integration tests are ordinary JUnit classes
+        # that happen to start containers, not a separate source set, so splitting them would mean
+        # starting the same containers twice.
+        run: ./gradlew test
+
+      - name: Coverage report
+        if: always()
+        run: ./gradlew jacocoTestReport
+
+      - name: Package
+        run: ./gradlew bootJar
+
+      - name: Upload test and coverage reports
+        # always(), so a failing build still publishes the report that explains why. Without this
+        # a red run tells you only that something failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/
+            **/build/reports/checkstyle/
+            **/build/reports/jacoco/
+          retention-days: 7
+
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: jars
+          path: '**/build/libs/*.jar'
+          retention-days: 7
+
+  package:
+    name: Image, Compose and k6 validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the tracking-service image
+        # Built, never pushed: there is no registry in this project. The point is that the
+        # multi-stage Dockerfile still resolves and compiles, which a Gradle-only build does not
+        # prove — the image builds from a different context and a different JDK image.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tracking-service/Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate the Compose file
+        # Catches a malformed override, an undefined volume or a bad profile before someone
+        # discovers it while trying to run the demo.
+        run: docker compose config --quiet
+
+      - name: Validate the k6 script
+        # `k6 inspect` executes the script's init context and prints the resolved options, so a
+        # syntax error or a bad scenario definition fails here rather than three minutes into a
+        # load test.
+        run: |
+          docker run --rm -v "$PWD/performance/k6:/scripts:ro" grafana/k6:0.57.0 \
+            inspect /scripts/parcelflow-load-test.js
+
+  dependencies:
+    name: Dependency vulnerabilities (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # ADVISORY, deliberately, and this is the documentation the brief asks for:
+    #
+    #   1. The NVD feed reports CVEs in transitive dependencies that a Spring Boot version bump
+    #      resolves on Boot's own release schedule. Blocking merges on those would mean either
+    #      pinning versions Boot has not adopted, or adding a suppression to get a green tick —
+    #      and a suppression added under time pressure is never revisited.
+    #   2. Dependency-Check's identification of shaded and relocated jars produces false positives
+    #      at a rate that would train everyone to ignore the job.
+    #
+    # The report is published as an artifact and is meant to be read. If this project were
+    # handling real customer data, the correct answer would be a blocking scan with a triaged
+    # suppression file and an owner, not this.
+    continue-on-error: true
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Cache the NVD database
+        # Without this, every run re-downloads the whole vulnerability database, which takes tens
+        # of minutes and hammers a public API.
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/dependency-check-data
+          key: nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: nvd-${{ runner.os }}-
+
+      - name: OWASP Dependency-Check
+        env:
+          # Optional. Without a key the NVD API is rate-limited to the point of being unusable;
+          # the build script backs off further when the key is absent. Add it as a repository
+          # secret to make this job practical.
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./gradlew dependencyCheckAnalyze
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: build/reports/dependency-check/
+          retention-days: 7
+
+  sonar:
+    name: SonarQube (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Every step is a no-op unless a SONAR_TOKEN secret exists, so a fork or a fresh clone does not
+    # get a permanently red job for a server it has no access to. The guard is on the steps rather
+    # than the job because GitHub does not make the secrets context available to a job-level `if`.
+    # Advisory for the same reason as the scan above: quality-gate thresholds nobody has tuned are
+    # not a merge gate.
+    if: github.event_name != 'pull_request'
+    continue-on-error: true
+    env:
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    steps:
+      - name: Check out
+        if: env.SONAR_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          # Sonar's new-code detection needs history; a shallow clone makes every line look new.
+          fetch-depth: 0
+
+      - name: Set up JDK 25
+        if: env.SONAR_TOKEN != ''
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        if: env.SONAR_TOKEN != ''
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Analyse
+        if: env.SONAR_TOKEN != ''
+        # Coverage first: Sonar reads the JaCoCo XML report, and without a preceding test run the
+        # dashboard reports 0% coverage, which is worse than reporting none.
+        run: ./gradlew test jacocoTestReport sonar

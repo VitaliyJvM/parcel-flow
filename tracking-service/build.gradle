@@ -23,6 +23,22 @@ dependencies {
     implementation 'org.flywaydb:flyway-database-postgresql'
 
     implementation 'io.micrometer:micrometer-registry-prometheus'
+
+    // Tracing, without a tracing backend. The bridge gives every unit of work a trace id and a
+    // span id, propagates them across the HTTP and Kafka boundaries in W3C headers, and puts them
+    // in the logging context so a JSON log line carries them as fields. No exporter is configured,
+    // so spans are created and dropped: the value here is correlation in the logs, and adding an
+    // OTLP exporter plus a Tempo or Zipkin container is a dependency and a Compose service away.
+    // Honest about what this is — trace context propagation, not a trace viewer.
+    //
+    // Two coordinates, and both are needed. Spring Boot 4 split its auto-configuration into
+    // per-technology modules: spring-boot-micrometer-tracing-brave is the wiring and brings no
+    // Brave, micrometer-tracing-bridge-brave is Brave and brings no wiring. Either one alone
+    // produces a build that looks like it has tracing and silently has none — observations still
+    // work, so the Kafka listener timer appears and nothing complains, but no span is ever created
+    // and no trace id reaches the logging context.
+    implementation 'org.springframework.boot:spring-boot-micrometer-tracing-brave'
+    implementation 'io.micrometer:micrometer-tracing-bridge-brave'
     implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${springdocVersion}"
 
     runtimeOnly 'org.postgresql:postgresql'
