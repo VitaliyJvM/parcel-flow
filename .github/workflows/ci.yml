@@ -8,7 +8,7 @@ name: CI
 #
 #   build          BLOCKING   compile, Checkstyle, unit + integration tests, jar
 #   package        BLOCKING   Docker image build, Compose validation, k6 script parse
-#   dependencies   ADVISORY   OWASP Dependency-Check (see the job for why)
+#   dependencies   ADVISORY   OWASP Dependency-Check; only runs when an NVD_API_KEY secret exists
 #   sonar          ADVISORY   only runs when a SONAR_TOKEN secret exists
 #
 # The advisory jobs use continue-on-error deliberately and say so in their own comments. Nothing
@@ -142,7 +142,7 @@ jobs:
   dependencies:
     name: Dependency vulnerabilities (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     # ADVISORY, deliberately, and this is the documentation the brief asks for:
     #
     #   1. The NVD feed reports CVEs in transitive dependencies that a Spring Boot version bump
@@ -155,26 +155,45 @@ jobs:
     # The report is published as an artifact and is meant to be read. If this project were
     # handling real customer data, the correct answer would be a blocking scan with a triaged
     # suppression file and an owner, not this.
+    #
+    # Every step is a no-op unless an NVD_API_KEY secret exists. This is not laziness, it is the
+    # only configuration that terminates: without a key the NVD API allows 5 requests per rolling
+    # 30 seconds, the seed of the vulnerability database is ~150 paged requests, and the run
+    # exceeds any sane timeout. A timeout is a *cancellation*, actions/cache does not run its save
+    # step on a cancelled job, so the cache below stays empty and the next run starts from zero
+    # and dies in the same place. The job could never bootstrap itself. Skipping is honest;
+    # a permanently cancelled check is not. The guard is on the steps rather than the job because
+    # GitHub does not make the secrets context available to a job-level `if`.
+    #
+    # A key is free from https://nvd.nist.gov/developers/request-an-api-key — add it as the
+    # repository secret NVD_API_KEY and this job starts running on its own.
     continue-on-error: true
+    env:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
     steps:
       - name: Check out
+        if: env.NVD_API_KEY != ''
         uses: actions/checkout@v4
 
       - name: Set up JDK 25
+        if: env.NVD_API_KEY != ''
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
 
       - name: Set up Gradle
+        if: env.NVD_API_KEY != ''
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: true
 
       - name: Cache the NVD database
         # Without this, every run re-downloads the whole vulnerability database, which takes tens
-        # of minutes and hammers a public API.
+        # of minutes and hammers a public API. The key is unique per run so the entry is always
+        # rewritten with the freshly-updated database; restore-keys pulls the most recent one.
+        if: env.NVD_API_KEY != ''
         uses: actions/cache@v4
         with:
           path: ~/.gradle/dependency-check-data
@@ -182,15 +201,13 @@ jobs:
           restore-keys: nvd-${{ runner.os }}-
 
       - name: OWASP Dependency-Check
-        env:
-          # Optional. Without a key the NVD API is rate-limited to the point of being unusable;
-          # the build script backs off further when the key is absent. Add it as a repository
-          # secret to make this job practical.
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        if: env.NVD_API_KEY != ''
         run: ./gradlew dependencyCheckAnalyze
 
       - name: Upload the report
-        if: always()
+        # always(), but only when the scan actually ran — an unconditional upload of a directory
+        # that was never created fails the step and makes a skipped job look broken.
+        if: always() && env.NVD_API_KEY != ''
         uses: actions/upload-artifact@v4
         with:
           name: dependency-check-report

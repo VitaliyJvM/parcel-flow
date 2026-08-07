@@ -84,8 +84,11 @@ dependencyCheck {
     formats = ['HTML', 'JSON']
     outputDirectory = layout.buildDirectory.dir('reports/dependency-check').get().asFile.path
     suppressionFile = file('config/owasp/dependency-check-suppressions.xml')
-    // Without a key the NVD API is rate-limited to the point of taking tens of minutes. Read from
-    // the environment so the key is never in the repository.
+    // Read from the environment so the key is never in the repository. Without a key the NVD API
+    // allows 5 requests per rolling 30 seconds, so the ~150 paged requests that seed the database
+    // take upwards of half an hour — hence the 8s back-off, and hence CI skipping this job
+    // entirely when the key is absent rather than burning a runner on a scan that cannot finish.
+    // Locally the wait is survivable because the database persists in the Gradle user home.
     nvd {
         apiKey = System.getenv('NVD_API_KEY')
         delay = System.getenv('NVD_API_KEY') ? 1000 : 8000

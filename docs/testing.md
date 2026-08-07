@@ -465,7 +465,7 @@ all three and can only be demonstrated where all three exist. Added:
 | Jar and Docker image build | **yes** | The image builds from a different context and JDK image than the Gradle build, so it can break independently |
 | Compose config validation | **yes** | Cheap, and catches a broken demo before someone finds it live |
 | k6 script parse (`k6 inspect`) | **yes** | A syntax error should fail in seconds, not three minutes into a load test |
-| OWASP Dependency-Check | no — advisory | See below |
+| OWASP Dependency-Check | no — advisory, and skipped without an API key | See below |
 | SonarQube | no — advisory, and skipped without a token | See below |
 
 Nothing that verifies correctness is advisory. `continue-on-error` appears exactly twice, on the two
@@ -478,6 +478,17 @@ under time pressure is never revisited. Dependency-Check also produces false pos
 at a rate that would train everyone to ignore the job. The report is published as a build artifact
 and is meant to be read. For a system handling real customer data the right answer is a blocking scan
 with a triaged suppression file and an owner.
+
+**Why it is also skipped without a key.** Anonymous callers get 5 NVD API requests per rolling 30
+seconds. Seeding the vulnerability database takes roughly 150 paged requests, so the first run cannot
+finish inside a sensible timeout — and because a timeout is a *cancellation*, `actions/cache` never
+runs its save step, so the cached database stays empty and the next run starts from zero and dies in
+the same place. The job cannot bootstrap itself. Rather than leave a permanently cancelled check on
+every pull request, the steps are guarded on an `NVD_API_KEY` secret, the same way Sonar is guarded on
+`SONAR_TOKEN`. A key is free from
+[nvd.nist.gov](https://nvd.nist.gov/developers/request-an-api-key); adding it as a repository secret
+is all that is needed to turn the job on. Locally the scan works without one — the wait is only paid
+once because the database persists in the Gradle user home.
 
 **Why Sonar is advisory.** It is skipped entirely unless a `SONAR_TOKEN` secret exists, so a fork does
 not get a permanently red job for a server it cannot reach. Quality-gate thresholds nobody has tuned
