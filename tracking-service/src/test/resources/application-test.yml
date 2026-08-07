@@ -26,6 +26,18 @@ spring:
     consumer:
       auto-offset-reset: earliest
 
+  data:
+    redis:
+      # Deliberately not the production 500ms. That value exists so a live service degrades rather
+      # than parks a request thread on an unreachable cache, and it is the right production choice.
+      # In a test it is a race: a cold Lettuce connection to a container on a loaded CI runner can
+      # take longer than that, the cache error handler swallows the failure exactly as designed, and
+      # a test asserting cache behaviour then fails with a counter that never moved. Tests that
+      # assert the degraded path pin their own short timeouts instead — see
+      # ShipmentCacheUnavailableIntegrationTest.
+      timeout: 5s
+      connect-timeout: 5s
+
 parcelflow:
   kafka:
     # Single-broker Redpanda container: a replication factor above 1 cannot be satisfied.
