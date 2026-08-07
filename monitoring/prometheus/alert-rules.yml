@@ -1,0 +1,168 @@
+# Alert rules for ParcelFlow.
+#
+# The thresholds are starting points for a local stack, not values derived from production
+# experience — nothing here has been tuned against real traffic, and a real deployment would set
+# them from its own error budget. What the rules are meant to demonstrate is the choice of *what*
+# to alert on:
+#
+#   * Symptoms a customer would notice, or a backlog a human has to clear. Not "CPU is 80%".
+#   * Rates over windows, never instantaneous values, so one bad second does not page anyone.
+#   * A `for:` clause on everything, so a blip has to persist before it becomes an alert.
+#   * Backlog gauges as well as rates: a failure rate of zero is not the same as nothing being
+#     wrong, because yesterday's failures are still sitting in the table.
+#
+# Severity is a label, not a mechanism: with no Alertmanager wired up, nothing routes on it. It is
+# there to say which of these would wake somebody.
+
+groups:
+
+  - name: parcelflow-ingest
+    rules:
+
+      - alert: TrackingServiceDown
+        expr: up{job="tracking-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Prometheus cannot scrape tracking-service
+          description: >-
+            The scrape target has been down for a minute. Either the service is not running or its
+            actuator endpoint stopped answering. Check `docker compose ps` and
+            `docker compose logs tracking-service`.
+
+      - alert: EventProcessingFailureRateHigh
+        # A ratio, not an absolute count: five failures a minute is a catastrophe at ten events a
+        # minute and noise at ten thousand.
+        expr: >-
+          sum(rate(parcelflow_tracking_events_failed_total[5m]))
+          /
+          clamp_min(sum(rate(parcelflow_tracking_events_received_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 5% of carrier events are failing
+          description: >-
+            Break down by category with
+            sum by (category) (rate(parcelflow_tracking_events_failed_total[5m])).
+            A spike in VALIDATION or UNKNOWN_EVENT_TYPE usually means a carrier changed its
+            payload; INFRASTRUCTURE means look at the database.
+
+      - alert: DeadLetterRateElevated
+        # Any sustained dead-lettering is worth a look: it means the retry budget was exhausted or
+        # the payload can never be processed, and each one is a parcel scan that did not land.
+        expr: sum(rate(parcelflow_tracking_events_dlt_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Events are being dead-lettered continuously
+          description: >-
+            Inspect GET /api/admin/failed-events, and the carrier-tracking-events-dlt topic for the
+            raw payloads.
+
+      - alert: EventProcessingLatencyHigh
+        expr: >-
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(parcelflow_tracking_event_processing_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: p99 event processing is above one second
+          description: >-
+            Compare against parcelflow_tracking_events_optimistic_lock_conflicts_total — sustained
+            lock contention on hot parcels is the usual cause — and against the database's own
+            latency.
+
+      - alert: ConsumerLagGrowing
+        # Redpanda and Kafka both expose this through the client metrics Micrometer binds.
+        expr: max(kafka_consumer_fetch_manager_records_lag_max) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The consumer is falling behind the topic
+          description: >-
+            Ingest is slower than production. Either the producer sped up or processing slowed
+            down; check the processing latency panel before adding consumer threads.
+
+  - name: parcelflow-backlog
+    rules:
+
+      - alert: FailedEventsAwaitingReview
+        # A gauge, not a rate. These do not go away on their own: an event that failed yesterday is
+        # still a parcel with a missing scan today, and a rate-based alert resolves itself while
+        # the backlog keeps growing.
+        expr: parcelflow_failed_events_awaiting_review > 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Failed events are piling up unreviewed
+          description: >-
+            Work the queue at GET /api/admin/failed-events?status=FAILED. Retryable categories can
+            be replayed with POST /api/admin/failed-events/{id}/retry.
+
+      - alert: NoEventsReceived
+        # The failure mode no error rate can catch: everything is "healthy" because nothing is
+        # happening. Only meaningful where traffic is expected to be continuous, which for a demo
+        # stack it is not — kept as an illustration and noted as such.
+        expr: sum(rate(parcelflow_tracking_events_received_total[15m])) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: No carrier events have been received for 30 minutes
+          description: >-
+            Expected on an idle local stack. In a deployment this would mean the consumer stopped,
+            the producer stopped, or a rebalance left partitions unassigned.
+
+  - name: parcelflow-api
+    rules:
+
+      - alert: ApiErrorRateHigh
+        expr: >-
+          sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_server_requests_seconds_count[5m])), 0.001)
+          > 0.02
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 2% of HTTP requests are returning 5xx
+          description: >-
+            4xx is excluded deliberately: a client sending bad requests is not an outage of this
+            service.
+
+      - alert: ApiLatencyHigh
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_server_requests_seconds_bucket{uri!="/actuator/prometheus"}[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: p95 API latency is above 500ms
+          description: >-
+            Check whether Redis is up — a cache outage is designed to cost latency and nothing
+            else, and this is what that trade-off looks like on a dashboard.
+
+      - alert: CacheDegraded
+        # The counter that exists because a swallowed error is invisible by design.
+        expr: sum(rate(parcelflow_cache_failures_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: Redis operations are failing and being swallowed
+          description: >-
+            Correctness is unaffected — reads fall through to PostgreSQL — but evict failures leave
+            entries stale until their TTL expires. Not paging severity.

@@ -2,10 +2,20 @@ plugins {
     // Declared here so subprojects can apply them without repeating versions.
     id 'org.springframework.boot' version '4.1.0' apply false
     id 'io.spring.dependency-management' version '1.1.7' apply false
+    // Quality gates. Applied where they are needed rather than to every project blindly:
+    // dependency-check and Sonar aggregate at the root, Checkstyle and JaCoCo run per module.
+    id 'org.owasp.dependencycheck' version '12.1.0'
+    id 'org.sonarqube' version '6.0.1.5171'
+}
+
+ext {
+    checkstyleToolVersion = '10.21.0'
 }
 
 subprojects {
     apply plugin: 'java'
+    apply plugin: 'checkstyle'
+    apply plugin: 'jacoco'
 
     group = 'ca.vm'
     version = '0.1.0-SNAPSHOT'
@@ -31,6 +41,111 @@ subprojects {
         testLogging {
             events 'passed', 'skipped', 'failed'
             exceptionFormat = 'full'
+        }
+        // The coverage report is only useful if it covers the run that just happened.
+        finalizedBy tasks.named('jacocoTestReport')
+    }
+
+    checkstyle {
+        toolVersion = rootProject.ext.checkstyleToolVersion
+        configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+        configDirectory = rootProject.file('config/checkstyle')
+        // A violation fails the build. A style check that only warns is a style check nobody runs:
+        // the warnings scroll past, the count grows, and the rule stops meaning anything. The
+        // ruleset is deliberately small so that this is a reasonable thing to enforce.
+        ignoreFailures = false
+        maxWarnings = 0
+    }
+
+    jacoco {
+        toolVersion = '0.8.13'
+    }
+
+    tasks.named('jacocoTestReport') {
+        dependsOn tasks.named('test')
+        reports {
+            // Sonar reads the XML; the HTML is for a human looking at one module.
+            xml.required = true
+            html.required = true
+        }
+    }
+}
+
+/*
+ * OWASP Dependency-Check.
+ *
+ * Informational in CI, not a gate. Two honest reasons: the NVD feed reports vulnerabilities in
+ * transitive dependencies that a Spring Boot version bump fixes on its own schedule, and the
+ * analyzer's false-positive rate on shaded jars is high enough that a hard failure would train
+ * people to add suppressions without reading them. The report is published as a build artifact and
+ * the suppression file documents every exclusion.
+ */
+dependencyCheck {
+    formats = ['HTML', 'JSON']
+    outputDirectory = layout.buildDirectory.dir('reports/dependency-check').get().asFile.path
+    suppressionFile = file('config/owasp/dependency-check-suppressions.xml')
+    // Read from the environment so the key is never in the repository. Without a key the NVD API
+    // allows 5 requests per rolling 30 seconds, so the ~150 paged requests that seed the database
+    // take upwards of half an hour — hence the 8s back-off, and hence CI skipping this job
+    // entirely when the key is absent rather than burning a runner on a scan that cannot finish.
+    // Locally the wait is survivable because the database persists in the Gradle user home.
+    nvd {
+        apiKey = System.getenv('NVD_API_KEY')
+        delay = System.getenv('NVD_API_KEY') ? 1000 : 8000
+    }
+    analyzers {
+        // Nothing in this project is Node, .NET, Ruby or Swift. Leaving those analyzers on costs
+        // minutes per run and finds nothing.
+        assemblyEnabled = false
+        nodeAudit { enabled = false }
+        nodeEnabled = false
+        retirejs { enabled = false }
+    }
+    // Reported but not enforced; see the comment above.
+    failBuildOnCVSS = 11
+    skipConfigurations = ['checkstyle', 'jacocoAgent', 'jacocoAnt']
+}
+
+/*
+ * SonarQube Cloud.
+ *
+ * Every value that identifies a project or authenticates comes from the environment, so nothing
+ * here is specific to one account and no credential is in the repository. Locally those variables
+ * come from .env.sonar (git-ignored; copy .env.sonar.example); in CI they come from GitHub Actions
+ * secrets and variables. Run it with ./scripts/run-sonar.sh.
+ *
+ * `sonar` deliberately does not depend on `test` or `jacocoTestReport`. It consumes the XML report
+ * those tasks already wrote, so CI runs the suite exactly once and a local run reuses whatever is
+ * on disk. Wiring a dependency here would double every Testcontainers run.
+ */
+sonar {
+    properties {
+        property 'sonar.projectKey', System.getenv('SONAR_PROJECT_KEY') ?: ''
+        property 'sonar.organization', System.getenv('SONAR_ORGANIZATION') ?: ''
+        property 'sonar.projectName', 'ParcelFlow'
+        // Overridable only so a self-hosted instance stays possible; the default is the Cloud
+        // endpoint, and no locally-running server is required.
+        property 'sonar.host.url', System.getenv('SONAR_HOST_URL') ?: 'https://sonarcloud.io'
+        property 'sonar.java.source', '25'
+        // Generated reports, not sources. Coverage of a Gradle wrapper script is not a metric.
+        property 'sonar.exclusions', '**/build/**,**/generated/**'
+        // Points Sonar at the reports `jacocoTestReport` already produces, one per module. Absolute
+        // paths because this is declared once at the root and read by every module.
+        property 'sonar.coverage.jacoco.xmlReportPaths',
+                subprojects.collect { module ->
+                    module.layout.buildDirectory
+                            .file('reports/jacoco/test/jacocoTestReport.xml').get().asFile.path
+                }.join(',')
+    }
+}
+
+// The token is read from the environment and set only when present, so it is never written into
+// the build script and an unauthenticated invocation fails with Sonar's own error rather than
+// sending an empty credential.
+if (System.getenv('SONAR_TOKEN')) {
+    sonar {
+        properties {
+            property 'sonar.token', System.getenv('SONAR_TOKEN')
         }
     }
 }

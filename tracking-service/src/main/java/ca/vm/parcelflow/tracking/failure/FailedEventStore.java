@@ -1,6 +1,5 @@
 package ca.vm.parcelflow.tracking.failure;
 
-import ca.vm.parcelflow.tracking.TrackingEventMetrics;
 import ca.vm.parcelflow.tracking.error.ErrorCategory;
 import ca.vm.parcelflow.tracking.error.ProcessingErrorClassifier;
 import java.time.Clock;
@@ -34,17 +33,14 @@ public class FailedEventStore {
 
     private final FailedEventRepository failedEventRepository;
     private final ProcessingErrorClassifier classifier;
-    private final TrackingEventMetrics metrics;
     private final Clock clock;
 
     public FailedEventStore(
             FailedEventRepository failedEventRepository,
             ProcessingErrorClassifier classifier,
-            TrackingEventMetrics metrics,
             Clock clock) {
         this.failedEventRepository = failedEventRepository;
         this.classifier = classifier;
-        this.metrics = metrics;
         this.clock = clock;
     }
 
@@ -69,9 +65,11 @@ public class FailedEventStore {
             int partition,
             long offset) {
 
+        // The failure counter is not incremented here. It is owned by TrackingEventProcessor,
+        // which sees every attempt; this method only runs once the record is being recovered, so
+        // counting here would report one failure for an event that failed six times.
         ErrorCategory category = classifier.classify(failure);
         Throwable reported = unwrap(failure);
-        metrics.processingFailed(category);
 
         Optional<FailedEvent> existing = eventId == null
                 ? Optional.empty()
@@ -138,7 +136,6 @@ public class FailedEventStore {
         FailedEvent failedEvent = getFailedEvent(failedEventId);
         Throwable reported = unwrap(failure);
         ErrorCategory category = classifier.classify(failure);
-        metrics.processingFailed(category);
         failedEvent.markRetryFailed(
                 category, reported.getClass().getName(), reported.getMessage(), clock.instant());
         return failedEventRepository.save(failedEvent);

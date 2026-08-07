@@ -1,4 +1,13 @@
 spring:
+  datasource:
+    hikari:
+      # Small on purpose. Every cached Spring context holds its own pool for the whole test run,
+      # and they all point at one PostgreSQL container: at the production pool size, the eighth
+      # context fails to start with "sorry, too many clients already". Nothing here is throughput
+      # bound.
+      maximum-pool-size: 5
+      minimum-idle: 1
+
   jpa:
     hibernate:
       # Still 'validate' in tests: a mismatch between a migration and an entity mapping should
@@ -16,6 +25,18 @@ spring:
       acks: all
     consumer:
       auto-offset-reset: earliest
+
+  data:
+    redis:
+      # Deliberately not the production 500ms. That value exists so a live service degrades rather
+      # than parks a request thread on an unreachable cache, and it is the right production choice.
+      # In a test it is a race: a cold Lettuce connection to a container on a loaded CI runner can
+      # take longer than that, the cache error handler swallows the failure exactly as designed, and
+      # a test asserting cache behaviour then fails with a counter that never moved. Tests that
+      # assert the degraded path pin their own short timeouts instead — see
+      # ShipmentCacheUnavailableIntegrationTest.
+      timeout: 5s
+      connect-timeout: 5s
 
 parcelflow:
   kafka:

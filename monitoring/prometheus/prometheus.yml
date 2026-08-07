@@ -1,0 +1,35 @@
+# Prometheus configuration for the local ParcelFlow stack.
+#
+# One scrape target and one rule file. Everything here is sized for a laptop running a demo, not
+# for a production Prometheus: a 5s scrape interval would be aggressive at any real scale, and is
+# chosen so that a scenario run by hand shows up on a dashboard while the person is still looking
+# at it.
+
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+# No Alertmanager. Rules still evaluate and firing alerts are visible at
+# http://localhost:9090/alerts, which is the part worth demonstrating: the rule expressions and
+# their thresholds. Routing pages to a human is a deployment concern, not a modelling one.
+
+scrape_configs:
+
+  - job_name: tracking-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [ tracking-service:8080 ]
+        labels:
+          service: tracking-service
+    # The instance label defaults to host:port, which is stable in Compose and would not be in a
+    # real deployment; there it would come from service discovery.
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [ localhost:9090 ]

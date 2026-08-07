@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!DOCTYPE suppressions PUBLIC
+        "-//Checkstyle//DTD SuppressionFilter Configuration 1.2//EN"
+        "https://checkstyle.org/dtds/suppressions_1_2.dtd">
+
+<!--
+  Accepted exclusions. Each one names a file and a rule and says why; a blanket suppression by
+  directory would make the ruleset meaningless without making that obvious.
+-->
+<suppressions>
+
+    <!--
+      Test classes import assertion and request-builder statics in bulk, which is the idiom the
+      libraries are designed around: `assertThat(x).isEqualTo(y)` reads as a sentence and
+      `Assertions.assertThat(...)` does not. The rule stays on for main sources, where a static
+      import genuinely can hide where a name comes from.
+    -->
+    <suppress checks="CustomImportOrder" files="[\\/]src[\\/]test[\\/]"/>
+
+    <!--
+      The Spring Boot entry point looks like a utility class — one static main — but it is also a
+      @SpringBootApplication configuration class, which Spring instantiates. Giving it the private
+      constructor the rule asks for would stop the application from starting.
+    -->
+    <suppress checks="HideUtilityClassConstructor" files="TrackingServiceApplication.java|CarrierSimulatorApplication.java"/>
+
+</suppressions>

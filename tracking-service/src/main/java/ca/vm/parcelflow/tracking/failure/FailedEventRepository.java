@@ -15,6 +15,18 @@ public interface FailedEventRepository extends JpaRepository<FailedEvent, UUID> 
 
     Page<FailedEvent> findByStatus(FailedEventStatus status, Pageable pageable);
 
+    /** Backs the {@code parcelflow.failed.events.awaiting.review} gauge. */
+    long countByStatus(FailedEventStatus status);
+
+    /**
+     * Backs the {@code parcelflow.dead.letters.unresolved} gauge.
+     *
+     * <p>Counts anything not yet resolved, which includes records currently being retried. A retry
+     * in flight is still an unresolved failure, and excluding it would make the gauge dip every
+     * time an operator clicked the button rather than when the problem actually went away.
+     */
+    long countByStatusNot(FailedEventStatus status);
+
     /**
      * Atomically claims a failed event for a manual retry.
      *

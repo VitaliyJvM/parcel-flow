@@ -1,9 +1,11 @@
 package ca.vm.parcelflow.infrastructure.config;
 
+import ca.vm.parcelflow.infrastructure.observability.CacheFailureMetrics;
 import ca.vm.parcelflow.shipment.api.ShipmentResponse;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.cache.Cache;
@@ -44,6 +46,26 @@ public class CacheConfiguration implements CachingConfigurer {
     public static final String SHIPMENT_TRACKING_CACHE = "shipment-tracking";
 
     /**
+     * Resolved lazily, through a provider.
+     *
+     * <p>{@link CachingConfigurer} is consumed while the cache interceptor is being built, which is
+     * early — early enough that asking for a fully-initialized {@code MeterRegistry} at that point
+     * risks forcing metrics infrastructure into existence before its own configuration has been
+     * applied. The provider defers the lookup to the first cache failure, by which time the context
+     * is running. If metrics are somehow unavailable, a missing counter must not turn a swallowed
+     * Redis error into a thrown one.
+     */
+    private final ObjectProvider<CacheFailureMetrics> cacheFailureMetrics;
+
+    public CacheConfiguration(ObjectProvider<CacheFailureMetrics> cacheFailureMetrics) {
+        this.cacheFailureMetrics = cacheFailureMetrics;
+    }
+
+    private void countFailure(String operation, Cache cache) {
+        cacheFailureMetrics.ifAvailable(metrics -> metrics.failure(operation, cache.getName()));
+    }
+
+    /**
      * Makes every cache operation best-effort.
      *
      * <p>The default handler rethrows, which would turn "Redis is down" into "the tracking API is
@@ -66,6 +88,7 @@ public class CacheConfiguration implements CachingConfigurer {
 
             @Override
             public void handleCacheGetError(RuntimeException exception, Cache cache, Object key) {
+                countFailure("get", cache);
                 log.warn("Cache read failed for {}::{}; falling through to PostgreSQL: {}",
                         cache.getName(), key, exception.getMessage());
             }
@@ -73,18 +96,21 @@ public class CacheConfiguration implements CachingConfigurer {
             @Override
             public void handleCachePutError(
                     RuntimeException exception, Cache cache, Object key, Object value) {
+                countFailure("put", cache);
                 log.warn("Cache write failed for {}::{}; the response is still correct: {}",
                         cache.getName(), key, exception.getMessage());
             }
 
             @Override
             public void handleCacheEvictError(RuntimeException exception, Cache cache, Object key) {
+                countFailure("evict", cache);
                 log.warn("Cache eviction failed for {}::{}; the entry may serve stale data until "
                         + "its TTL expires: {}", cache.getName(), key, exception.getMessage());
             }
 
             @Override
             public void handleCacheClearError(RuntimeException exception, Cache cache) {
+                countFailure("clear", cache);
                 log.warn("Cache clear failed for {}: {}", cache.getName(), exception.getMessage());
             }
         };
@@ -121,7 +147,17 @@ public class CacheConfiguration implements CachingConfigurer {
 
             return RedisCacheManager.builder(connectionFactory)
                     .cacheDefaults(configuration)
+
+                    // Declared up front rather than created on first use so that Boot's cache
+                    // meter binder has a cache to bind at startup. A cache that materializes on
+                    // the first request is invisible to metrics until then, which is exactly when
+                    // someone is looking at the dashboard.
                     .initialCacheNames(Set.of(SHIPMENT_TRACKING_CACHE))
+
+                    // Without this, Spring Data Redis keeps no statistics and every
+                    // cache.gets/cache.puts series Micrometer publishes reads zero forever — a
+                    // dashboard that looks like a working cache with no traffic.
+                    .enableStatistics()
                     .build();
         }
     }

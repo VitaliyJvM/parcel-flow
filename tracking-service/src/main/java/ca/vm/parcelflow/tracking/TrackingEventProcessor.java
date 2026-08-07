@@ -1,7 +1,9 @@
 package ca.vm.parcelflow.tracking;
 
 import ca.vm.parcelflow.infrastructure.config.EventProcessingProperties;
+import ca.vm.parcelflow.tracking.error.ProcessingErrorClassifier;
 import ca.vm.parcelflow.tracking.messaging.CarrierTrackingEventMessage;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -28,6 +30,13 @@ import org.springframework.stereotype.Service;
  *       bounded number of times with a fresh transaction each attempt, which re-reads the shipment
  *       and re-runs the ordering decision against the state that actually won.
  * </ul>
+ *
+ * <p>This is also where the pipeline is measured. The timer spans the whole call including retries,
+ * because the question a latency panel answers is "how long did this event take to land", not "how
+ * long did the attempt that happened to win take". Failures are counted here, once per attempt at
+ * this method, using the same {@link ProcessingErrorClassifier} that decides the retry policy — so
+ * the {@code category} on a failure metric always agrees with the category on the stored
+ * failed-event row.
  */
 @Service
 public class TrackingEventProcessor {
@@ -36,14 +45,17 @@ public class TrackingEventProcessor {
 
     private final TrackingEventRecorder recorder;
     private final TrackingEventMetrics metrics;
+    private final ProcessingErrorClassifier classifier;
     private final EventProcessingProperties properties;
 
     public TrackingEventProcessor(
             TrackingEventRecorder recorder,
             TrackingEventMetrics metrics,
+            ProcessingErrorClassifier classifier,
             EventProcessingProperties properties) {
         this.recorder = recorder;
         this.metrics = metrics;
+        this.classifier = classifier;
         this.properties = properties;
     }
 
@@ -55,24 +67,35 @@ public class TrackingEventProcessor {
      *     error handler can apply its own backoff rather than this loop spinning
      */
     public TrackingEventProcessingResult process(CarrierTrackingEventMessage message) {
-        metrics.eventReceived();
+        Timer.Sample sample = metrics.startProcessing();
+        try {
+            TrackingEventProcessingResult result = attemptWithRetries(message);
+            recordOutcome(sample, result);
+            return result;
+        } catch (RuntimeException e) {
+            metrics.recordFailure(sample, classifier.classify(e));
+            throw e;
+        }
+    }
 
+    private TrackingEventProcessingResult attemptWithRetries(CarrierTrackingEventMessage message) {
         int maxAttempts = properties.maxOptimisticLockRetries() + 1;
 
         for (int attempt = 1; ; attempt++) {
             try {
-                TrackingEventProcessingResult result = recorder.record(message, attempt);
-                recordOutcome(result);
-                return result;
+                return recorder.record(message, attempt);
 
             } catch (DataIntegrityViolationException e) {
                 // Lost the insert race for this event id. The winner has already stored it, so
                 // there is nothing left to do. Logged without the stack trace: an expected
-                // condition that prints a trace teaches operators to ignore traces.
-                metrics.duplicateEvent();
+                // condition that prints a trace teaches operators to ignore traces. Not counted
+                // here — the re-read below returns a duplicate result, which recordOutcome counts.
                 log.info("Event {} was already stored by a concurrent consumer; treating the "
                         + "redelivery as a no-op ({})", message.eventId(), e.getClass().getSimpleName());
-                return duplicateAfterRace(message, attempt);
+                // A second call into the recorder, which now takes its duplicate fast path. Safe
+                // from unbounded recursion because the winning transaction has committed by the
+                // time the constraint fired, so the pre-check cannot miss.
+                return recorder.record(message, attempt);
 
             } catch (OptimisticLockingFailureException e) {
                 metrics.optimisticLockConflict();
@@ -91,28 +114,14 @@ public class TrackingEventProcessor {
         }
     }
 
-    /**
-     * Re-reads the stored event after losing an insert race.
-     *
-     * <p>A second call into the recorder, which now takes its duplicate fast path. This is safe
-     * from unbounded recursion because the winning transaction has committed by the time the
-     * constraint fired, so the pre-check cannot miss.
-     */
-    private TrackingEventProcessingResult duplicateAfterRace(
-            CarrierTrackingEventMessage message, int attempt) {
-        TrackingEventProcessingResult result = recorder.record(message, attempt);
-        recordOutcome(result);
-        return result;
-    }
-
-    private void recordOutcome(TrackingEventProcessingResult result) {
+    private void recordOutcome(Timer.Sample sample, TrackingEventProcessingResult result) {
         if (result.duplicate()) {
-            metrics.duplicateEvent();
+            metrics.recordDuplicate(sample);
             log.info("Event {} already processed; no shipment or notification change", result.eventId());
         } else if (result.advancedShipment()) {
-            metrics.eventApplied();
+            metrics.recordApplied(sample);
         } else {
-            metrics.eventSuperseded();
+            metrics.recordOutOfOrder(sample);
             log.info("Event {} arrived out of order or after a terminal status; stored in history "
                     + "but shipment remains {}", result.eventId(), result.shipmentStatusAfterProcessing());
         }

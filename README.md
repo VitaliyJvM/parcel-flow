@@ -1,5 +1,8 @@
 # ParcelFlow — Distributed Shipment Event Processor
 
+<!-- Replace OWNER/REPO with this repository's path once it is pushed to GitHub. -->
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+
 ParcelFlow ingests shipment tracking events from multiple delivery carriers, normalizes their
 different formats into one event vocabulary, maintains the current status of every parcel, preserves
 full tracking history, and generates notification records for delivery milestones.
@@ -12,6 +15,19 @@ duplicates, out-of-order arrivals, malformed payloads, and concurrent updates to
 
 Carrier names in this project (`SWIFTPOST`, `NORDEX`, `PACIFICA`, `METROLINK`) are fictional.
 
+## The business scenario
+
+An ecommerce retailer ships through several carriers and wants one consistent answer to "where is my
+parcel". Each carrier publishes scan events in its own vocabulary, on its own schedule, with its own
+idea of reliability: the same scan arrives twice, a backfilled scan arrives after a later one, and
+occasionally a payload is malformed. The retailer's customers want a status and a history; the
+retailer wants to know which parcels are stuck; the customer wants a message when something
+meaningful happens.
+
+ParcelFlow is the piece in the middle. It takes those event streams, turns them into one status model
+and one history per parcel, decides which milestones deserve a customer notification, and stays
+correct while the stream misbehaves.
+
 ---
 
 ## Build status
@@ -20,13 +36,14 @@ Carrier names in this project (`SWIFTPOST`, `NORDEX`, `PACIFICA`, `METROLINK`) a
 |-------|-------|-------|
 | **1** | Repo structure, Gradle build, Docker Compose, database schema, Shipment REST API, tests | ✅ Complete |
 | **2** | Kafka, carrier simulator, event consumer, normalization, tracking history | ✅ Complete |
-| **3** | Idempotency, out-of-order handling, retries, DLQ, notifications, Redis cache | ✅ Complete — 198 tests passing |
-| 4 | Metrics, structured logging, performance test, final docs | Not started |
+| **3** | Idempotency, out-of-order handling, retries, DLQ, notifications, Redis cache | ✅ Complete |
+| **4** | Metrics, alerting, structured logging, tracing, Prometheus + Grafana, k6 load test, CI, quality gates, docs | ✅ Complete — 226 tests passing |
 
-Stages 1–3 form a complete, resilient vertical slice: register a parcel over HTTP, have a carrier
-publish its own event codes to Kafka, watch them get normalized and applied, and read the resulting
-status, history and notifications back over REST — while the pipeline absorbs duplicate deliveries,
-out-of-order arrival, concurrent updates, invalid payloads and a Redis outage.
+A complete, resilient, observable vertical slice: register a parcel over HTTP, have a carrier publish
+its own event codes to Kafka, watch them get normalized and applied, and read the resulting status,
+history and notifications back over REST — while the pipeline absorbs duplicate deliveries,
+out-of-order arrival, concurrent updates, invalid payloads and a Redis outage, and reports on all of
+it through Prometheus, Grafana and structured JSON logs.
 
 ---
 
@@ -66,7 +83,18 @@ flowchart LR
     Client(["Retailer / consumer"]) --> API
     API --> PG
     API --> RD
+
+    subgraph obs["Monitoring"]
+        PROM["Prometheus<br/>scrape + alert rules"]
+        GRAF["Grafana<br/>provisioned dashboard"]
+    end
+
+    svc -.->|"/actuator/prometheus"| PROM
+    PROM --> GRAF
 ```
+
+More diagrams — system context, containers, and sequence diagrams for the successful, duplicate,
+out-of-order and dead-letter paths — are in [docs/architecture.md](docs/architecture.md#12-diagrams).
 
 Deliberately **one** service, not many. Splitting shipment writes and event ingestion across
 processes would add distributed transactions to a problem that does not need them: the event
@@ -88,8 +116,12 @@ its own deployment.
 | Messaging | Redpanda (Kafka API), Spring Kafka 4 |
 | Cache | Redis 7, via Spring Cache |
 | API docs | springdoc-openapi 3.1 (OpenAPI 3.1) |
-| Observability | Spring Boot Actuator + Micrometer / Prometheus |
+| Observability | Spring Boot Actuator, Micrometer, Prometheus, Grafana, Micrometer Tracing (Brave) |
+| Logging | ECS-structured JSON via Spring Boot's built-in structured logging |
 | Testing | JUnit 6, AssertJ, MockMvc, Awaitility, Testcontainers 2 |
+| Load testing | k6 |
+| Quality | Checkstyle, JaCoCo, OWASP Dependency-Check, SonarQube Community Build |
+| CI | GitHub Actions |
 | Packaging | Docker multi-stage build, Docker Compose |
 
 Spring Boot 4 notes worth knowing if you build on this: the web starter is now
@@ -121,10 +153,15 @@ docker compose down        # add -v to drop the database and broker volumes
 | API | http://localhost:8080 |
 | Swagger UI | http://localhost:8080/swagger-ui.html |
 | OpenAPI JSON | http://localhost:8080/v3/api-docs |
-| Health | http://localhost:8080/actuator/health |
-| Prometheus metrics | http://localhost:8080/actuator/prometheus |
+| Health (everything, including Redis) | http://localhost:8080/actuator/health |
+| Liveness | http://localhost:8080/actuator/health/liveness |
+| Readiness (PostgreSQL + Kafka) | http://localhost:8080/actuator/health/readiness |
+| Metrics, Prometheus format | http://localhost:8080/actuator/prometheus |
+| **Grafana dashboard** | **http://localhost:3000** — no login, opens on the ParcelFlow dashboard |
+| **Prometheus** | **http://localhost:9090** — targets at `/targets`, alerts at `/alerts` |
 | PostgreSQL | `localhost:5432` — `parcelflow` / `parcelflow` / db `parcelflow` |
 | Kafka (Redpanda) | `localhost:19092` from the host, `redpanda:9092` between containers |
+| Redpanda admin | http://localhost:9644 |
 | Redis | `localhost:6379` |
 
 `carrier-simulator` sits behind a Compose profile so `up` does not start it — it is a one-shot CLI.
@@ -138,18 +175,62 @@ docker compose up -d postgres redpanda
 ./gradlew :tracking-service:bootRun
 ```
 
-### Tests
+### Tests and quality gates
 
 ```bash
-./gradlew test          # or ./gradlew clean build
+./gradlew test                            # 226 tests: unit + integration
+./gradlew checkstyleMain checkstyleTest   # style; violations fail the build
+./gradlew jacocoTestReport                # coverage, per module
+./gradlew build                           # all of the above, plus the jars
+./gradlew dependencyCheckAnalyze          # OWASP; slow without an NVD_API_KEY
+./scripts/run-sonar.sh                    # SonarQube Cloud; needs .env.sonar
+
+./gradlew :tracking-service:test --tests '*IdempotencyAndOrdering*'   # one slice
 ```
 
-Requires a running Docker daemon: the integration tests start real PostgreSQL and Redpanda
+SonarQube Cloud analysis reads its configuration from `.env.sonar`, which is git-ignored. Copy
+`.env.sonar.example` to `.env.sonar` and fill in the three values; the template says where each one
+comes from. The script reuses the JaCoCo reports already on disk rather than re-running the suite.
+
+Requires a running Docker daemon: the integration tests start real PostgreSQL, Redpanda and Redis
 containers via Testcontainers. No mocked database and no embedded broker anywhere.
+
+What blocks CI and what is advisory — and why — is in
+[docs/testing.md](docs/testing.md#stage-4-quality-gates).
+
+### Performance test
+
+```bash
+export PARCELFLOW_LOAD_TESTING_ENABLED=true       # the publish endpoint is off by default
+docker compose up -d --force-recreate tracking-service
+docker compose --profile perf run --rm k6 run /scripts/parcelflow-load-test.js
+```
+
+`export`, not a one-off prefix: Compose recreates a service whose environment changed, so running the
+second command without it silently restarts the service with the endpoint disabled.
+
+Everything is configurable:
+
+```bash
+SHIPMENT_COUNT=1000 VIRTUAL_USERS=50 TEST_DURATION=5m EVENT_RATE=500 \
+  DUPLICATE_PERCENTAGE=25 OUT_OF_ORDER_PERCENTAGE=20 \
+  docker compose --profile perf run --rm k6 run /scripts/parcelflow-load-test.js
+```
+
+The scenario creates shipments, publishes events at a target rate with a controlled share of
+duplicates and out-of-order arrivals, reads status and history concurrently, and reconciles what it
+published against the service's own counters at the end. Measured results, with the machine they came
+from, are in [docs/performance-results.md](docs/performance-results.md).
 
 ---
 
-## Demo: a parcel from label to doorstep
+## Demo
+
+A twelve-step script with exact commands — normal delivery, duplicates, out-of-order arrival, an
+invalid payload, the dashboards, and a Redis outage — is in [docs/demo.md](docs/demo.md). The short
+version follows.
+
+### A parcel from label to doorstep
 
 ```bash
 docker compose up --build -d
@@ -362,15 +443,56 @@ rule.
 | **Error classification** | Every failure maps to a category with two answers: retry automatically, and retry manually. Blanket-retrying `RuntimeException` spends the whole budget on payloads that can never succeed. One classifier feeds the error handler, the stored record and the admin API, so they cannot disagree. |
 | **Dead letter queue** | Exhausted and permanently-invalid records are written to `failed_events` **then** published to the DLT — if the broker is what is broken, losing the explanation too is strictly worse. Neither step may throw, or a poison record stops the consumer. |
 | **Transaction boundaries** | Duplicate detection, retry, failed-event persistence and cache eviction each sit deliberately *outside* the processing transaction; inside, each would be a bug. See [docs/architecture.md](docs/architecture.md#5-transaction-boundaries). |
+| **Readiness that means something** | PostgreSQL and Kafka are required for readiness; Redis is not, because a cache outage costs latency and never correctness. Liveness contains no dependency at all — a restart does not fix a database that is down, and putting one there turns an infrastructure blip into a restart storm across every instance. |
+| **Metric cardinality** | No meter is labelled with a shipment id, event id, tracking number or correlation id. Each is unbounded, and an unbounded label is one time series per value. Identifiers live in the logs, where searching is what they are for; a test walks every registered meter and every line of the scrape output to keep it that way. |
+| **Measuring honestly** | The load test reconciles what it published against the service's own counters. A run reporting good throughput and no errors looks identical whether or not half the events were silently dead-lettered — the reconciliation is what tells the two apart. |
 
 ---
 
+## Observability
+
+Everything the pipeline does is measured, and the dashboard and alert rules are files in this
+repository rather than clicks in a UI.
+
+```bash
+docker compose up -d          # Prometheus and Grafana come up with everything else
+open http://localhost:3000    # the dashboard, already provisioned, no login
+open http://localhost:9090/alerts
+```
+
+* **Metrics.** Throughput, per-outcome counts (applied, out of order, duplicate), failures by error
+  category, dead letters, a processing-duration histogram, notification counts, Redis cache
+  statistics, and backlog gauges for active shipments and unreviewed failures. Full catalogue with
+  the exact Prometheus names: [docs/operations.md](docs/operations.md#2-metrics-catalogue).
+* **Alerts.** Ten rules covering failure rate, dead-lettering, processing latency, consumer lag,
+  unreviewed backlog, API error rate and cache degradation — symptoms rather than resources, ratios
+  rather than counts, every one with a `for:` clause.
+* **Logs.** ECS-structured JSON with `correlationId`, `eventId`, `shipmentId`, `carrierCode`,
+  `topic`, `partition`, `offset`, `traceId` and `spanId` as first-class fields. No customer data, no
+  raw payloads, and no stack trace for an expected duplicate.
+* **Tracing.** W3C trace context propagated across HTTP and Kafka and written into the logs. No
+  exporter is configured, so spans are dropped — this is correlation, not a trace viewer.
+* **Resilience.** Seven documented experiments — restart the service mid-stream, stop Redis, stop
+  PostgreSQL, stop the broker, poison messages, duplicate bursts, concurrent bursts — each with the
+  metrics to watch, the logs to read and the consistency check to run:
+  [docs/operations.md](docs/operations.md#6-resilience-verification).
+
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — module boundaries, data model, design decisions
-- [docs/testing.md](docs/testing.md) — testing strategy and what each test proves
-- [docs/event-processing.md](docs/event-processing.md) — event contract, normalization, pipeline, error classification
-- `docs/performance-results.md` — load test script and results template *(Stage 4)*
+- [docs/architecture.md](docs/architecture.md) — module boundaries, data model, design decisions,
+  Mermaid diagrams, scaling, single points of failure, and what would change in production
+- [docs/event-processing.md](docs/event-processing.md) — event contract, normalization, pipeline,
+  error classification, and what the pipeline reports about itself
+- [docs/testing.md](docs/testing.md) — testing strategy, what each test proves, and the quality gates
+- [docs/operations.md](docs/operations.md) — metric catalogue, alert rules, health policy, structured
+  logging, troubleshooting searches, and seven reproducible resilience experiments
+- [docs/troubleshooting.md](docs/troubleshooting.md) — ten real failures, with symptoms, diagnosis
+  commands and recovery
+- [docs/performance-results.md](docs/performance-results.md) — measured load test results and the
+  environment they came from
+- [docs/demo.md](docs/demo.md) — a twelve-step, five-to-ten-minute demonstration
+- [docs/interview-guide.md](docs/interview-guide.md) — architecture walkthrough and honest answers to
+  ten distributed-systems questions
 
 ---
 
@@ -393,12 +515,22 @@ Known limitations, stated plainly:
   replayed in the opposite order settle differently. Bounded by the `event_id` constraint, which
   excludes exact replays.
 - **Notification records are never dispatched.** By design; nothing moves them out of `PENDING`.
-- **No tracing.** Counters exist in `TrackingEventMetrics`; exposing them, latency timers, DLQ depth
-  and structured JSON logging are Stage 4.
+- **Trace context, but no trace backend.** `traceId` and `spanId` are created, propagated across the
+  HTTP and Kafka boundaries and written into the logs, but no exporter is configured, so spans are
+  dropped. Adding OTLP and a Tempo container is a dependency and a Compose service away.
+- **The load test found the configured rate, not the ceiling.** The [measured run](docs/performance-results.md)
+  sustained ~195 events/s with zero consumer lag because that is what it was asked for. A
+  ramping-arrival-rate run that climbs until lag grows is the missing experiment.
+- **Alert thresholds are starting points**, chosen for a laptop, not derived from an error budget.
+- **Actuator shares the API port** with health details on. Fine locally, reconnaissance if exposed; a
+  real deployment would move management to a port that is not publicly routed.
+- **The load-testing publish endpoint exists.** Disabled by default, guarded by a property, tested to
+  be absent unless enabled — and it would not ship at all in a real deployment.
+- **Resilience experiments and the load run are manual.** Documented and reproducible, not automated.
 
-Candidate next steps: multiple consumer instances with a rebalance test, a schema registry,
-OpenTelemetry tracing, extracting `notification` into its own service, chaos testing of the broker
-and database, and a minimal React tracking page.
+Candidate next steps: multiple consumer instances with a rebalance test, a schema registry, an OTLP
+exporter and a trace backend, bulk DLT replay, a notification dispatcher, extracting `notification`
+into its own service, and a minimal React tracking page.
 
 ---
 
@@ -406,9 +538,19 @@ and database, and a minimal React tracking page.
 
 ```
 parcel-flow/
-├── build.gradle                 # shared config for all subprojects
+├── build.gradle                 # shared config, quality plugins
 ├── settings.gradle
-├── docker-compose.yml
+├── docker-compose.yml           # postgres, redpanda, redis, service, prometheus, grafana, k6
+├── .github/workflows/ci.yml     # compile, style, tests, image, advisory scans
+├── config/
+│   ├── checkstyle/              # ruleset and its documented suppressions
+│   └── owasp/                   # dependency-check suppressions (empty, and says why)
+├── monitoring/
+│   ├── prometheus/              # scrape config and 10 alert rules
+│   └── grafana/                 # provisioned datasource and dashboard
+├── performance/
+│   ├── k6/                      # the load scenario
+│   └── results/                 # summary.json and summary.md, written by a run
 ├── docs/
 ├── tracking-service/
 │   ├── Dockerfile
@@ -419,7 +561,7 @@ parcel-flow/
 │       │   ├── shipment/        # aggregate, service, REST API
 │       │   ├── tracking/        # event consumer, history, error classification, failed events
 │       │   ├── notification/    # milestone rules and notification records
-│       │   ├── infrastructure/  # framework wiring
+│       │   ├── infrastructure/  # framework wiring, health indicators, observability
 │       │   └── shared/          # cross-module API concerns
 │       ├── main/resources/db/migration/
 │       └── test/java/ca/vm/parcelflow/

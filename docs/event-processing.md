@@ -514,5 +514,69 @@ when the producer stops pacing itself. Genuine optimistic-lock contention is cov
 - A schema registry, which would remove the hand-maintained duplicate contract.
 - Bulk replay from the DLT; today retry is one event at a time.
 - Authentication on `/api/admin/**`.
-- Latency timers, DLQ depth gauges and structured JSON logging — Stage 4. The counters exist
-  (`TrackingEventMetrics`); exposing them is a separate job.
+- A trace backend. Trace context is created and propagated across the HTTP and Kafka boundaries and
+  appears in the logs; no exporter is configured, so spans are dropped.
+
+
+---
+
+## 12. What the pipeline reports about itself
+
+Every step above is instrumented. The full metric catalogue, the log field list and the
+troubleshooting searches are in [operations.md](operations.md); this section maps them onto the
+pipeline stages so it is clear which number answers which question.
+
+### Per stage
+
+| Stage | Meter | Reads as |
+|---|---|---|
+| Taken off the topic | `parcelflow_tracking_events_received_total` | Everything that entered the pipeline, including redeliveries and manual retries |
+| Duplicate fast path | `parcelflow_tracking_events_duplicate_total` | Redeliveries absorbed. A **success**, not a failure |
+| Ordering decision — advanced | `parcelflow_tracking_events_applied_total` | Events that moved the parcel |
+| Ordering decision — superseded | `parcelflow_tracking_events_out_of_order_total` | Events stored in history but too late to move it |
+| Any successful outcome | `parcelflow_tracking_events_processed_total` | applied + out of order + duplicate |
+| Optimistic-lock retry | `parcelflow_tracking_events_optimistic_lock_conflicts_total` | Contention on a parcel |
+| Classification | `parcelflow_tracking_events_failed_total{category,retryable}` | One increment per failed attempt, tagged with the category the classifier assigned |
+| Recovery | `parcelflow_tracking_events_dlt_total` | Records published to the dead letter topic |
+| End to end | `parcelflow_tracking_event_processing_duration_seconds{outcome}` | Histogram, spanning the whole call including in-process retries |
+| Notification rules | `parcelflow_notifications_total{type}`, `parcelflow_notifications_skipped_total{reason}` | Records created, and applied events that produced none |
+| Backlog | `parcelflow_failed_events_awaiting_review`, `parcelflow_dead_letters_unresolved` | What a human still has to deal with |
+
+The counters partition cleanly, which is what makes them worth trusting:
+
+```
+received = processed + failed(attempts that reached the processor)
+processed = applied + out_of_order + duplicate
+```
+
+A [measured run](performance-results.md) published 23,990 events with 2,161 deliberate duplicates and
+2,032 deliberate out-of-order events, and the service reported exactly 2,161 duplicates and 2,032
+out-of-order — with `tracking_events` holding 21,829 rows, which is 23,990 minus the duplicates. That
+reconciliation is the test of the instrumentation as much as of the pipeline: a load test reporting
+throughput and no errors would look identical if half the events had been silently dead-lettered.
+
+### What is deliberately not a label
+
+No meter carries `shipmentId`, `eventId`, `trackingNumber` or `correlationId`. Each is unbounded, and
+an unbounded label means one time series per value. Those identifiers are in the logs instead, where
+searching is what they are for — see the `jq` recipes in
+[operations.md](operations.md#troubleshooting-searches).
+
+### The log line for one event
+
+Every log line produced while handling a carrier event carries `correlationId`, `eventId`,
+`shipmentId`, `carrierCode`, `topic`, `partition`, `offset`, `traceId` and `spanId` as structured
+fields, established once by the listener and restored on exit — consumer threads are pooled, and a
+context entry left behind attributes the next record to the wrong parcel. `FailedEventRecoverer`
+establishes its own, because it runs after the listener's has closed and "this event was
+dead-lettered" is precisely the line an operator needs to correlate.
+
+Three rules the pipeline's logging follows:
+
+* **A duplicate logs one INFO line with no stack trace.** It is an expected condition, and a trace on
+  an expected condition teaches operators to ignore traces.
+* **A payload is stored, never logged.** Failed payloads go to `failed_events`, where an operator has
+  to ask for them, rather than into a log stream that gets shipped and indexed.
+* **A correlation id is generated when the producer omits one.** Logging the literal `null` is worst:
+  a missing correlation id is exactly the situation where someone is trying to trace something
+  unusual.

@@ -1,10 +1,10 @@
 package ca.vm.parcelflow.tracking.messaging;
 
+import ca.vm.parcelflow.infrastructure.observability.LogContext;
 import ca.vm.parcelflow.tracking.TrackingEventProcessingResult;
 import ca.vm.parcelflow.tracking.TrackingEventProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.handler.annotation.Header;
@@ -47,22 +47,29 @@ public class CarrierTrackingEventListener {
     public void onCarrierTrackingEvent(
             @Payload CarrierTrackingEventMessage message,
             @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
+            @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
             @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
             @Header(KafkaHeaders.OFFSET) long offset) {
 
-        // MDC is populated before anything can fail so that exceptions logged elsewhere — by the
-        // container's error handler, or by any code this calls into — still carry the identifiers
-        // needed to find the event. Stage 4's JSON encoder renders these as first-class fields.
-        try (var ignored = MDC.putCloseable("eventId", String.valueOf(message.eventId()));
-                var ignored2 = MDC.putCloseable("shipmentId", String.valueOf(message.shipmentId()));
-                var ignored3 =
-                        MDC.putCloseable("carrierCode", String.valueOf(message.carrierCode()));
-                var ignored4 =
-                        MDC.putCloseable("correlationId", String.valueOf(message.correlationId()))) {
+        // The context is established before anything can fail, so that exceptions logged elsewhere
+        // — by the container's error handler, or by any code this calls into — still carry the
+        // identifiers needed to find the event. The structured encoder renders each of these as a
+        // first-class JSON field; see LogContext for why they are declared in one place.
+        //
+        // A correlation id that the producer omitted is generated rather than logged as "null":
+        // the whole point of the field is that every line for one unit of work shares a value.
+        try (var ignored = LogContext.forCarrierEvent(
+                LogContext.correlationIdOrNew(message.correlationId()),
+                message.eventId(),
+                message.shipmentId(),
+                String.valueOf(message.carrierCode()),
+                topic,
+                partition,
+                offset)) {
 
-            // The identifiers are repeated in the message rather than left only in MDC: until
-            // Stage 4 swaps in a structured encoder, the plain-text pattern does not render MDC,
-            // and an ingest audit line that omits the event id is not much of an audit line.
+            // The identifiers are repeated in the message as well as carried as fields. Redundant
+            // in a JSON log store, deliberately so everywhere else: a line pasted into a ticket or
+            // read from a plain console still says which event it is.
             log.info("Received carrier event eventId={} shipmentId={} carrierCode={} "
                             + "correlationId={} type={} sequence={} partition={} offset={}",
                     message.eventId(), message.shipmentId(), message.carrierCode(),
