@@ -46,8 +46,7 @@ class ScenarioEventFactoryTest {
     void everyScenarioPublishesEventsForTheRequestedParcel(Scenario scenario) {
         List<CarrierTrackingEventMessage> events = factory.eventsFor(request(scenario));
 
-        assertThat(events).isNotEmpty();
-        assertThat(events).allSatisfy(event -> {
+        assertThat(events).isNotEmpty().allSatisfy(event -> {
             assertThat(event.eventId()).isNotNull();
             assertThat(event.eventTime()).isNotNull();
             assertThat(event.shipmentId()).isEqualTo(SHIPMENT_ID);
@@ -65,8 +64,10 @@ class ScenarioEventFactoryTest {
                 factory.eventsFor(request(Scenario.NORMAL, "PACIFICA"));
 
         assertThat(swiftPost).extracting(CarrierTrackingEventMessage::eventType)
+                .isNotEmpty()
                 .doesNotContainAnyElementsOf(
                         pacifica.stream().map(CarrierTrackingEventMessage::eventType).toList());
+        assertThat(pacifica).isNotEmpty();
     }
 
     @Nested
@@ -167,12 +168,9 @@ class ScenarioEventFactoryTest {
             List<CarrierTrackingEventMessage> duplicated =
                     factory.eventsFor(request(Scenario.DUPLICATE));
 
-            assertThat(duplicated).hasSizeGreaterThan(normal.size());
-
-            // The set of distinct events is unchanged; only the delivery count differs. A fresh id
-            // would make them different events describing the same scan, which is a different
-            // problem entirely.
-            assertThat(duplicated).containsAll(normal);
+            assertThat(duplicated)
+                    .hasSizeGreaterThan(normal.size())
+                    .containsAll(normal);
             assertThat(duplicated.stream().distinct().toList())
                     .containsExactlyInAnyOrderElementsOf(normal);
         }

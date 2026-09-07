@@ -61,6 +61,7 @@ class CarrierEventNormalizerTest {
     void normalizersClaimDistinctCarriers() {
         assertThat(NORMALIZERS)
                 .extracting(CarrierEventNormalizer::carrierCode)
+                .isNotEmpty()
                 .doesNotContainNull()
                 .doesNotHaveDuplicates();
     }

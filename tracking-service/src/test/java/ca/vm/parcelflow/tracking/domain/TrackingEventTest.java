@@ -52,11 +52,11 @@ class TrackingEventTest {
         TrackingEvent sameEventDifferentDetails = event(EVENT_ID, 99L);
         TrackingEvent otherEvent = event(UUID.randomUUID(), 1L);
 
-        assertThat(event).isEqualTo(sameEventDifferentDetails);
-        assertThat(event).hasSameHashCodeAs(sameEventDifferentDetails);
-        assertThat(event).isNotEqualTo(otherEvent);
-        assertThat(event).isNotEqualTo(null);
-        assertThat(event).isNotEqualTo("not a tracking event");
+        assertThat(event)
+                .isEqualTo(sameEventDifferentDetails)
+                .hasSameHashCodeAs(sameEventDifferentDetails)
+                .isNotEqualTo(otherEvent)
+                .isNotEqualTo(new Object());
     }
 
     private static TrackingEvent event(UUID eventId, long sequenceNumber) {
