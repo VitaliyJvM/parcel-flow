@@ -25,9 +25,49 @@ class ScenarioEventFactoryTest {
 
     private static final Instant NOW = Instant.parse("2026-08-05T12:00:00Z");
     private static final UUID SHIPMENT_ID = UUID.fromString("00c5356b-8b0b-47e5-b88c-1e504dd2bf34");
+    private static final String TRACKING_NUMBER = "SP-1";
+    private static final String CARRIER = "SWIFTPOST";
 
     private final ScenarioEventFactory factory =
             new ScenarioEventFactory(Clock.fixed(NOW, ZoneOffset.UTC));
+
+    /**
+     * Deliberately at the top level rather than in a {@code @Nested} block below.
+     *
+     * <p>It is the one assertion that runs against every value of {@link Scenario}, so a scenario
+     * added to the enum and wired to a branch that returns nothing fails here rather than
+     * publishing silence at runtime — the nested blocks each test one scenario by name and cannot
+     * notice a new one. It also keeps the class from reading as testless: a test class whose tests
+     * are all nested is what SonarQube reports as java:S2187.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Scenario.class)
+    @DisplayName("every scenario publishes at least one event, all of them for the requested parcel")
+    void everyScenarioPublishesEventsForTheRequestedParcel(Scenario scenario) {
+        List<CarrierTrackingEventMessage> events = factory.eventsFor(request(scenario));
+
+        assertThat(events).isNotEmpty();
+        assertThat(events).allSatisfy(event -> {
+            assertThat(event.eventId()).isNotNull();
+            assertThat(event.eventTime()).isNotNull();
+            assertThat(event.shipmentId()).isEqualTo(SHIPMENT_ID);
+            assertThat(event.trackingNumber()).isEqualTo(TRACKING_NUMBER);
+            assertThat(event.carrierCode()).isEqualTo(CARRIER);
+        });
+    }
+
+    @Test
+    @DisplayName("the carrier's own script decides the journey, so a second carrier is not a copy")
+    void carrierDecidesTheJourney() {
+        List<CarrierTrackingEventMessage> swiftPost =
+                factory.eventsFor(request(Scenario.NORMAL, "SWIFTPOST"));
+        List<CarrierTrackingEventMessage> pacifica =
+                factory.eventsFor(request(Scenario.NORMAL, "PACIFICA"));
+
+        assertThat(swiftPost).extracting(CarrierTrackingEventMessage::eventType)
+                .doesNotContainAnyElementsOf(
+                        pacifica.stream().map(CarrierTrackingEventMessage::eventType).toList());
+    }
 
     @Nested
     @DisplayName("NORMAL")
@@ -219,7 +259,7 @@ class ScenarioEventFactoryTest {
     }
 
     private static SimulationRequest request(Scenario scenario) {
-        return request(scenario, "SWIFTPOST", 42L);
+        return request(scenario, CARRIER, 42L);
     }
 
     private static SimulationRequest request(Scenario scenario, String carrier) {
@@ -228,6 +268,6 @@ class ScenarioEventFactoryTest {
 
     private static SimulationRequest request(Scenario scenario, String carrier, long seed) {
         return new SimulationRequest(
-                SHIPMENT_ID, "SP-1", carrier, scenario, Duration.ZERO, "corr-1", seed);
+                SHIPMENT_ID, TRACKING_NUMBER, carrier, scenario, Duration.ZERO, "corr-1", seed);
     }
 }

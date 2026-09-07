@@ -3,9 +3,19 @@ spring:
     name: tracking-service
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/parcelflow
-    username: parcelflow
-    password: parcelflow
+    # No credentials in this file. It is packaged inside the jar, so anything written here ships
+    # with every build and lands in every image layer, and `password:` in a committed config is a
+    # hard-coded credential whatever the value happens to be locally (SonarQube java:S6437).
+    #
+    # SPRING_DATASOURCE_USERNAME / _PASSWORD come from the environment instead: Docker Compose sets
+    # them on the service, a real deployment injects them from its secret store, and a local
+    # `./gradlew bootRun` reads them from a git-ignored `.env` — see `.env.example` and the README.
+    # The empty defaults exist so the context still binds when nothing supplies them (the
+    # integration tests get URL, user and password from Testcontainers' @ServiceConnection); the
+    # connection then fails on authentication, loudly, rather than on a missing property.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/parcelflow}
+    username: ${SPRING_DATASOURCE_USERNAME:}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
     hikari:
       maximum-pool-size: 16
       # Fail fast rather than letting request threads pile up on an unavailable database.
@@ -85,6 +95,10 @@ spring:
       # cache degrades the read latency rather than hanging the request thread.
       timeout: 500ms
       connect-timeout: 500ms
+  web:
+    error:
+      include-stacktrace: never
+      include-message: never
 
 parcelflow:
   kafka:
@@ -130,11 +144,6 @@ parcelflow:
 
 server:
   port: 8080
-  error:
-    # Errors are produced by ApiExceptionHandler as problem+json; the servlet error page
-    # must not leak anything on the fallback path.
-    include-message: never
-    include-stacktrace: never
   shutdown: graceful
 
 management:
@@ -179,10 +188,8 @@ management:
         # recovered on its own the moment PostgreSQL returned.
         liveness:
           include: livenessState
-  health:
-    probes:
-      enabled: true
-
+      probes:
+        enabled: true
   metrics:
     distribution:
       # Server-side histograms rather than client-computed percentiles. A percentile calculated

@@ -29,7 +29,7 @@ docker compose down               # add -v to drop the database, broker and Graf
 | Metrics (JSON, browsable) | <http://localhost:8080/actuator/metrics> | |
 | **Prometheus** | <http://localhost:9090> | Targets: `/targets`. Alerts: `/alerts` |
 | **Grafana** | <http://localhost:3000> | Opens on the ParcelFlow dashboard; no login |
-| PostgreSQL | `localhost:5432` | `parcelflow` / `parcelflow` / db `parcelflow` |
+| PostgreSQL | `localhost:5432` | user / password / db from `.env`; `parcelflow` throughout by default |
 | Kafka (Redpanda) | `localhost:19092` | `redpanda:9092` between containers |
 | Redpanda admin | <http://localhost:9644> | |
 | Redis | `localhost:6379` | |

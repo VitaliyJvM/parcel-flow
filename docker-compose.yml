@@ -13,9 +13,12 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: parcelflow
-      POSTGRES_USER: parcelflow
-      POSTGRES_PASSWORD: parcelflow
+      # Defaults so a fresh clone runs with no setup; override any of them in a git-ignored `.env`,
+      # which Compose reads automatically. See `.env.example`. The service below reads the same two
+      # variables, so a changed password stays consistent on both sides.
+      POSTGRES_DB: ${POSTGRES_DB:-parcelflow}
+      POSTGRES_USER: ${POSTGRES_USER:-parcelflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parcelflow}
     ports:
       - "5432:5432"
     volumes:
@@ -23,7 +26,8 @@ services:
     healthcheck:
       # -U and -d are required: without them pg_isready reports ready during the
       # brief window when the init scripts have not created the database yet.
-      test: [ "CMD-SHELL", "pg_isready -U parcelflow -d parcelflow" ]
+      # $$ escapes the expansion for Compose, so the container's shell expands it, not Compose.
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -87,9 +91,11 @@ services:
     environment:
       # Spring relaxed binding maps these onto spring.datasource.* and spring.kafka.*,
       # overriding the localhost defaults in application.yml.
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/parcelflow
-      SPRING_DATASOURCE_USERNAME: parcelflow
-      SPRING_DATASOURCE_PASSWORD: parcelflow
+      # Credentials are not in application.yml — that file is packaged into the jar — so they are
+      # supplied here, from the same variables the postgres service above uses.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-parcelflow}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-parcelflow}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-parcelflow}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379

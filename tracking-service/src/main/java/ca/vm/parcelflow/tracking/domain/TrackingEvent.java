@@ -179,10 +179,17 @@ public class TrackingEvent {
         return Objects.hashCode(eventId);
     }
 
+    /**
+     * The parentheses around the concatenation are load-bearing. Method invocation binds tighter
+     * than {@code +}, so without them {@code formatted} applies to the second literal alone: its
+     * three placeholders take the first three arguments, {@code %d} is handed a {@code UUID}, and
+     * every call throws {@link java.util.IllegalFormatConversionException} — including the ones
+     * inside log statements, which is the worst place to discover it (java:S2275).
+     */
     @Override
     public String toString() {
-        return "TrackingEvent[eventId=%s, shipmentId=%s, carrierCode=%s, carrierEventType=%s, "
-                + "normalizedEventType=%s, sequenceNumber=%d, processingStatus=%s]"
+        return ("TrackingEvent[eventId=%s, shipmentId=%s, carrierCode=%s, carrierEventType=%s, "
+                + "normalizedEventType=%s, sequenceNumber=%d, processingStatus=%s]")
                 .formatted(eventId, shipmentId, carrierCode, carrierEventType,
                         normalizedEventType, sequenceNumber, processingStatus);
     }
