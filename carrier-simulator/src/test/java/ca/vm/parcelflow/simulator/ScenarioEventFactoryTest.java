@@ -15,12 +15,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-/**
- * What each scenario actually puts on the topic.
- *
- * <p>No broker: the publisher's job is a loop and a {@code send}, while the interesting decisions —
- * which events, in what order, with which ids — all live here.
- */
 class ScenarioEventFactoryTest {
 
     private static final Instant NOW = Instant.parse("2026-08-05T12:00:00Z");
@@ -31,15 +25,6 @@ class ScenarioEventFactoryTest {
     private final ScenarioEventFactory factory =
             new ScenarioEventFactory(Clock.fixed(NOW, ZoneOffset.UTC));
 
-    /**
-     * Deliberately at the top level rather than in a {@code @Nested} block below.
-     *
-     * <p>It is the one assertion that runs against every value of {@link Scenario}, so a scenario
-     * added to the enum and wired to a branch that returns nothing fails here rather than
-     * publishing silence at runtime — the nested blocks each test one scenario by name and cannot
-     * notice a new one. It also keeps the class from reading as testless: a test class whose tests
-     * are all nested is what SonarQube reports as java:S2187.
-     */
     @ParameterizedTest(name = "{0}")
     @EnumSource(Scenario.class)
     @DisplayName("every scenario publishes at least one event, all of them for the requested parcel")
@@ -103,8 +88,10 @@ class ScenarioEventFactoryTest {
         void identifiersAreCorrect() {
             List<CarrierTrackingEventMessage> events = factory.eventsFor(request(Scenario.NORMAL));
 
-            assertThat(events).extracting(CarrierTrackingEventMessage::eventId).doesNotHaveDuplicates();
-            assertThat(events).allSatisfy(event -> {
+            assertThat(events).extracting(CarrierTrackingEventMessage::eventId)
+                    .isNotEmpty()
+                    .doesNotHaveDuplicates();
+            assertThat(events).isNotEmpty().allSatisfy(event -> {
                 assertThat(event.schemaVersion()).isEqualTo(1);
                 assertThat(event.shipmentId()).isEqualTo(SHIPMENT_ID);
                 assertThat(event.trackingNumber()).isEqualTo("SP-1");
@@ -119,14 +106,14 @@ class ScenarioEventFactoryTest {
         void publishesCarrierNativeCodes() {
             assertThat(factory.eventsFor(request(Scenario.NORMAL, "SWIFTPOST")))
                     .extracting(CarrierTrackingEventMessage::eventType)
+                    .isNotEmpty()
                     .startsWith("SP_CREATED")
                     .endsWith("SP_DELIVERED")
-                    // If the simulator emitted normalized values the tracking service's
-                    // normalization layer would never be exercised end to end.
                     .doesNotContain("LABEL_CREATED", "DELIVERED");
 
             assertThat(factory.eventsFor(request(Scenario.NORMAL, "PACIFICA")))
                     .extracting(CarrierTrackingEventMessage::eventType)
+                    .isNotEmpty()
                     .startsWith("MANIFESTED")
                     .endsWith("COMPLETE")
                     .doesNotContain("LABEL_CREATED", "DELIVERED");
@@ -153,7 +140,8 @@ class ScenarioEventFactoryTest {
             List<UUID> second = factory.eventsFor(request(Scenario.NORMAL, "SWIFTPOST", 2L))
                     .stream().map(CarrierTrackingEventMessage::eventId).toList();
 
-            assertThat(first).doesNotContainAnyElementsOf(second);
+            assertThat(first).isNotEmpty().doesNotContainAnyElementsOf(second);
+            assertThat(second).isNotEmpty();
         }
     }
 
@@ -240,8 +228,6 @@ class ScenarioEventFactoryTest {
 
             assertThat(events).hasSize(1);
             CarrierTrackingEventMessage event = events.getFirst();
-            // Everything the validator checks is fine; only normalization can reject it. That
-            // separation is what makes the two failure categories distinguishable.
             assertThat(event.schemaVersion()).isEqualTo(1);
             assertThat(event.correlationId()).isNotBlank();
             assertThat(event.sequenceNumber()).isPositive();
