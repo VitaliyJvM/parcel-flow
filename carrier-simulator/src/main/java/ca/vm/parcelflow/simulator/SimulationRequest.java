@@ -1,5 +1,6 @@
 package ca.vm.parcelflow.simulator;
 
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +26,14 @@ public record SimulationRequest(
         Duration delayBetweenEvents,
         String correlationId,
         long seed) {
+
+    /**
+     * One instance, reused. A {@code SecureRandom} carries its own seeded state and is
+     * thread-safe, so constructing a fresh one per call pays for seeding the underlying source
+     * again and — on some platforms — draws from a pool that a repeated construction can leave
+     * less random than a single instance advanced repeatedly (java:S2119).
+     */
+    private static final SecureRandom SEED_SOURCE = new SecureRandom();
 
     public static final String USAGE = """
             Usage:
@@ -111,7 +120,7 @@ public record SimulationRequest(
      */
     private static long parseSeed(String value) {
         if (value == null) {
-            return new java.security.SecureRandom().nextLong();
+            return SEED_SOURCE.nextLong();
         }
         try {
             return Long.parseLong(value);

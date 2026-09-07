@@ -34,7 +34,7 @@ is worse than no claim.
 > transaction, so a crash in that gap causes redelivery. That is deliberate: a duplicate is
 > recoverable, a lost parcel scan is not.
 >
-> **Testing** is 226 tests with no mocked infrastructure — Testcontainers starts real PostgreSQL,
+> **Testing** is 238 tests with no mocked infrastructure — Testcontainers starts real PostgreSQL,
 > Redpanda and Redis, so the migrations, the constraints and the consumer semantics are all under
 > test. The idempotency and ordering claims are tests, not comments.
 >
@@ -363,7 +363,7 @@ claims production deployment or traffic.
 
 * Designed the event-ordering and failure-handling model — per-shipment sequence authority, terminal
   status protection, a nine-category error classifier driving retry, dead-letter and operator-retry
-  policy from one declaration — and proved it with 226 tests that run against real PostgreSQL, Kafka
+  policy from one declaration — and proved it with 238 tests that run against real PostgreSQL, Kafka
   and Redis containers via Testcontainers rather than mocks.
 
 * Instrumented the service end to end with Micrometer, Prometheus, Grafana and ECS-structured JSON
@@ -403,7 +403,7 @@ claims production deployment or traffic.
 > Fully instrumented — Prometheus metrics with deliberately bounded label cardinality, a provisioned
 > Grafana dashboard, ten alert rules, ECS-structured JSON logs with correlation and trace ids — and
 > load tested with k6 at ~195 events/s alongside concurrent reads on a single laptop, with the
-> published and processed event counts reconciled to confirm nothing was silently dropped. 226 tests
+> published and processed event counts reconciled to confirm nothing was silently dropped. 238 tests
 > run against real PostgreSQL, Kafka and Redis containers; CI gates on tests, style and dependency
 > scanning.
 >

@@ -7,15 +7,74 @@ import ca.vm.parcelflow.carrier.CarrierCode;
 import ca.vm.parcelflow.shipment.domain.ShipmentStatus;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /** Per-carrier vocabulary mapping. Pure functions, no Spring. */
 class CarrierEventNormalizerTest {
+
+    private static final List<CarrierEventNormalizer> NORMALIZERS =
+            List.of(new SwiftPostEventNormalizer(), new PacificaEventNormalizer());
+
+    /**
+     * The two tests below are deliberately at the top level rather than in a {@code @Nested} block.
+     *
+     * <p>The nested blocks each test one carrier's vocabulary by name and so cannot notice a third
+     * carrier being added. These two run against every implementation there is, which is where the
+     * shared contract belongs: a normalizer that maps codes itself instead of going through
+     * {@link CarrierEventCodes} fails here rather than quietly accepting a blank code. They also
+     * keep the class from reading as testless — a test class whose tests are all nested is what
+     * SonarQube reports as java:S2187.
+     */
+    static Stream<Named<CarrierEventNormalizer>> normalizers() {
+        return NORMALIZERS.stream()
+                .map(normalizer -> Named.of(normalizer.carrierCode().name(), normalizer));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("normalizers")
+    @DisplayName("every carrier rejects null, blank and unmapped codes, naming itself and the code")
+    void everyNormalizerRejectsCodesItDoesNotKnow(CarrierEventNormalizer normalizer) {
+        for (String unknown : Arrays.asList(null, "", "   ", "NOT_A_REAL_CODE")) {
+            UnknownCarrierEventTypeException rejection = rejectionOf(normalizer, unknown);
+
+            assertThat(rejection)
+                    .as("normalize(\"%s\") should have been rejected by %s",
+                            unknown, normalizer.carrierCode())
+                    .isNotNull();
+            // Both are what the dead letter record is built from, so an exception that loses
+            // either one costs an operator the only two facts that identify the failure.
+            assertThat(rejection.getCarrierCode()).isEqualTo(normalizer.carrierCode());
+            assertThat(rejection.getCarrierEventType()).isEqualTo(unknown);
+        }
+    }
+
+    @Test
+    @DisplayName("no two normalizers claim the same carrier, which the registry cannot resolve")
+    void normalizersClaimDistinctCarriers() {
+        assertThat(NORMALIZERS)
+                .extracting(CarrierEventNormalizer::carrierCode)
+                .isNotEmpty()
+                .doesNotContainNull()
+                .doesNotHaveDuplicates();
+    }
+
+    private static UnknownCarrierEventTypeException rejectionOf(
+            CarrierEventNormalizer normalizer, String carrierEventType) {
+        try {
+            normalizer.normalize(carrierEventType);
+            return null;
+        } catch (UnknownCarrierEventTypeException e) {
+            return e;
+        }
+    }
 
     @Nested
     @DisplayName("SwiftPost")

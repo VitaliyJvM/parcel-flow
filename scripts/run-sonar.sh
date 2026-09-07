@@ -5,11 +5,11 @@ set -Eeuo pipefail
 # ParcelFlow SonarQube Cloud analysis runner, for local use.
 #
 # Run from the repository root:
-#   cp .env.sonar.example .env.sonar     # then fill in the three values
+#   cp .env.example .env                 # then fill in the three SONAR_* values
 #   ./scripts/run-sonar.sh
 #
 # What it does:
-#   1. reads .env.sonar (git-ignored) without executing it;
+#   1. reads .env (git-ignored) without executing it;
 #   2. checks SONAR_TOKEN, SONAR_PROJECT_KEY and SONAR_ORGANIZATION are all present;
 #   3. runs `test jacocoTestReport` only if a module is missing its coverage XML;
 #   4. runs `./gradlew sonar`, which reuses that XML rather than re-running the suite.
@@ -32,8 +32,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env.sonar}"
-EXAMPLE_FILE="${REPO_ROOT}/.env.sonar.example"
+ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
+EXAMPLE_FILE="${REPO_ROOT}/.env.example"
 
 FORCE_TESTS="${FORCE_TESTS:-false}"
 SKIP_TESTS="${SKIP_TESTS:-false}"
@@ -53,8 +53,8 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 if [ ! -f "${ENV_FILE}" ]; then
     printf 'error: %s not found.\n\n' "${ENV_FILE}" >&2
-    printf 'Create it from the template and fill in the three values:\n\n' >&2
-    printf '    cp .env.sonar.example .env.sonar\n\n' >&2
+    printf 'Create it from the template and fill in the three SONAR_* values:\n\n' >&2
+    printf '    cp .env.example .env\n\n' >&2
     if [ -f "${EXAMPLE_FILE}" ]; then
         printf 'The template documents where each value comes from in SonarQube Cloud.\n' >&2
     fi
@@ -64,9 +64,12 @@ fi
 # -----------------------------------------------------------------------------
 # 2. Load it without executing it
 #
-# `source .env.sonar` would run whatever is in the file as shell code. This reads it line by line
+# `source .env` would run whatever is in the file as shell code. This reads it line by line
 # instead and assigns only the four keys below by name, so a stray backtick in a pasted token is
 # data rather than a command.
+#
+# The file is shared with Docker Compose and holds database variables too. They are not on the
+# whitelist below, so nothing but the four SONAR_* keys reaches the Gradle run.
 # -----------------------------------------------------------------------------
 
 read_env_file() {
@@ -103,7 +106,8 @@ read_env_file() {
             \'*\') value="${value#\'}"; value="${value%\'}" ;;
         esac
 
-        # A whitelist, assigned by explicit name. No eval, and an unexpected key in the file
+        # A whitelist, assigned by explicit name. No eval, and any other key in the file — the
+        # POSTGRES_* and SPRING_DATASOURCE_* values Compose reads, or anything a developer adds —
         # cannot introduce an environment variable into the Gradle run.
         case "${key}" in
             SONAR_TOKEN)        [ -n "${SONAR_TOKEN}" ]        || SONAR_TOKEN="${value}" ;;
@@ -128,7 +132,7 @@ MISSING=""
 
 if [ -n "${MISSING}" ]; then
     printf 'error: missing required value(s) in %s:%s\n\n' "${ENV_FILE}" "${MISSING}" >&2
-    printf 'See .env.sonar.example for where each one comes from in SonarQube Cloud.\n' >&2
+    printf 'See .env.example for where each one comes from in SonarQube Cloud.\n' >&2
     exit 1
 fi
 

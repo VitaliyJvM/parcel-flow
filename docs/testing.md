@@ -10,7 +10,8 @@
 Requires a running Docker daemon. Integration tests start real PostgreSQL 17, Redpanda and Redis
 containers.
 
-**226 tests, all passing** (198 from Stages 1–3, 28 added in Stage 4).
+**238 tests, all passing** (198 from Stages 1–3, 28 added in Stage 4, 12 added with the
+SonarQube fixes).
 
 ---
 
@@ -452,7 +453,7 @@ all three and can only be demonstrated where all three exist. Added:
 ./gradlew jacocoTestReport           # build/reports/jacoco/test/html/index.html per module
 ./gradlew build                      # compile + checkstyle + tests + jar, all of the above
 ./gradlew dependencyCheckAnalyze     # OWASP; slow without an NVD_API_KEY
-./scripts/run-sonar.sh               # SonarQube Cloud; reads .env.sonar, see below
+./scripts/run-sonar.sh               # SonarQube Cloud; reads SONAR_* from .env, see below
 ```
 
 ### SonarQube Cloud
@@ -464,17 +465,18 @@ is in the repository.
 Locally, copy the template and fill in the three values:
 
 ```bash
-cp .env.sonar.example .env.sonar     # git-ignored; the template lists where each value comes from
+cp .env.example .env                 # git-ignored; the template lists where each value comes from
 ./scripts/run-sonar.sh
 ```
 
-The script reads `.env.sonar` without executing it — it parses the file and assigns only the four
-keys it recognises, so a token containing shell metacharacters is data rather than a command — checks
+The script reads `.env` without executing it — it parses the file and assigns only the four `SONAR_*`
+keys it recognises, so a token containing shell metacharacters is data rather than a command, and the
+database variables sharing the file are ignored rather than exported into the build — checks
 all three values are present, runs `test jacocoTestReport` **only** when a module has no coverage XML
 yet, then runs `sonar`. It never prints the token. `FORCE_TESTS=true` re-runs the suite anyway;
 `SKIP_TESTS=true` refuses to.
 
-In CI there is no `.env.sonar` — it is git-ignored and never reaches a runner. The `build` job takes
+In CI there is no `.env` — it is git-ignored and never reaches a runner. The `build` job takes
 `SONAR_TOKEN` from a GitHub Actions secret and `SONAR_PROJECT_KEY` / `SONAR_ORGANIZATION` from
 repository variables, and the step is skipped unless all three are set.
 
@@ -564,7 +566,7 @@ say before it goes in.
 ### Running Sonar locally
 
 ```bash
-cp .env.sonar.example .env.sonar     # fill in the three values, then:
+cp .env.example .env                 # fill in the three SONAR_* values, then:
 ./scripts/run-sonar.sh
 ```
 
@@ -574,7 +576,7 @@ than showing nothing — so the script produces it first if a module is missing 
 otherwise. `sonar` is not part of `check` and is not required to build the project.
 
 Analysing a self-hosted SonarQube Server instead is a matter of setting `SONAR_HOST_URL` in
-`.env.sonar`; the build only defaults to the Cloud endpoint.
+`.env`; the build only defaults to the Cloud endpoint.
 
 ### Coverage
 

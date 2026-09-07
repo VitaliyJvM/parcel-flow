@@ -243,7 +243,7 @@ payloads.
 ./gradlew test
 ```
 
-226 tests. The integration tests start real PostgreSQL, Redpanda and Redis containers through
+238 tests. The integration tests start real PostgreSQL, Redpanda and Redis containers through
 Testcontainers — no mocked database and no embedded broker anywhere. To run a slice:
 
 ```bash

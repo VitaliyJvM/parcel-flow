@@ -37,7 +37,7 @@ correct while the stream misbehaves.
 | **1** | Repo structure, Gradle build, Docker Compose, database schema, Shipment REST API, tests | ✅ Complete |
 | **2** | Kafka, carrier simulator, event consumer, normalization, tracking history | ✅ Complete |
 | **3** | Idempotency, out-of-order handling, retries, DLQ, notifications, Redis cache | ✅ Complete |
-| **4** | Metrics, alerting, structured logging, tracing, Prometheus + Grafana, k6 load test, CI, quality gates, docs | ✅ Complete — 226 tests passing |
+| **4** | Metrics, alerting, structured logging, tracing, Prometheus + Grafana, k6 load test, CI, quality gates, docs | ✅ Complete — 238 tests passing |
 
 A complete, resilient, observable vertical slice: register a parcel over HTTP, have a carrier publish
 its own event codes to Kafka, watch them get normalized and applied, and read the resulting status,
@@ -159,7 +159,7 @@ docker compose down        # add -v to drop the database and broker volumes
 | Metrics, Prometheus format | http://localhost:8080/actuator/prometheus |
 | **Grafana dashboard** | **http://localhost:3000** — no login, opens on the ParcelFlow dashboard |
 | **Prometheus** | **http://localhost:9090** — targets at `/targets`, alerts at `/alerts` |
-| PostgreSQL | `localhost:5432` — `parcelflow` / `parcelflow` / db `parcelflow` |
+| PostgreSQL | `localhost:5432` — user / password / db from `.env`, `parcelflow` throughout by default |
 | Kafka (Redpanda) | `localhost:19092` from the host, `redpanda:9092` between containers |
 | Redpanda admin | http://localhost:9644 |
 | Redis | `localhost:6379` |
@@ -171,26 +171,36 @@ after changing it. See the demo below.
 ### Locally against containerized infrastructure
 
 ```bash
+cp .env.example .env                 # local configuration; git-ignored, Compose reads it itself
 docker compose up -d postgres redpanda
+set -a && source .env && set +a      # bootRun does not read .env, so export it
 ./gradlew :tracking-service:bootRun
 ```
+
+`application.yml` carries no database credentials — it is packaged into the jar and the image, so a
+password in it would ship with every build. The service reads `SPRING_DATASOURCE_USERNAME` and
+`SPRING_DATASOURCE_PASSWORD` from the environment: Compose sets them from `.env` (falling back to
+the local defaults, so `docker compose up` works on a fresh clone with no setup), and a real
+deployment injects them from its secret store. Without them the connection fails on authentication.
 
 ### Tests and quality gates
 
 ```bash
-./gradlew test                            # 226 tests: unit + integration
+./gradlew test                            # 238 tests: unit + integration
 ./gradlew checkstyleMain checkstyleTest   # style; violations fail the build
 ./gradlew jacocoTestReport                # coverage, per module
 ./gradlew build                           # all of the above, plus the jars
 ./gradlew dependencyCheckAnalyze          # OWASP; slow without an NVD_API_KEY
-./scripts/run-sonar.sh                    # SonarQube Cloud; needs .env.sonar
+./scripts/run-sonar.sh                    # SonarQube Cloud; needs SONAR_* in .env
 
 ./gradlew :tracking-service:test --tests '*IdempotencyAndOrdering*'   # one slice
 ```
 
-SonarQube Cloud analysis reads its configuration from `.env.sonar`, which is git-ignored. Copy
-`.env.sonar.example` to `.env.sonar` and fill in the three values; the template says where each one
-comes from. The script reuses the JaCoCo reports already on disk rather than re-running the suite.
+SonarQube Cloud analysis reads its configuration from the same git-ignored `.env` as everything
+else — copy `.env.example` to `.env` and fill in the three `SONAR_*` values; the template says where
+each one comes from. The script parses that file rather than sourcing it and takes only the `SONAR_*`
+keys, so the database variables next to them never reach the Gradle run. It reuses the JaCoCo reports
+already on disk rather than re-running the suite.
 
 Requires a running Docker daemon: the integration tests start real PostgreSQL, Redpanda and Redis
 containers via Testcontainers. No mocked database and no embedded broker anywhere.

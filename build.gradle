@@ -111,7 +111,7 @@ dependencyCheck {
  *
  * Every value that identifies a project or authenticates comes from the environment, so nothing
  * here is specific to one account and no credential is in the repository. Locally those variables
- * come from .env.sonar (git-ignored; copy .env.sonar.example); in CI they come from GitHub Actions
+ * come from .env (git-ignored; copy .env.example); in CI they come from GitHub Actions
  * secrets and variables. Run it with ./scripts/run-sonar.sh.
  *
  * `sonar` deliberately does not depend on `test` or `jacocoTestReport`. It consumes the XML report
