@@ -35,12 +35,30 @@ async function selectRetailer(page: Page, retailerId: string) {
   await expect(page.getByRole('button', { name: `Retailer: ${retailerId}. Change retailer` })).toBeVisible();
 }
 
-async function registerShipment(page: Page, trackingNumber: string) {
+async function chooseCarrier(page: Page, label: string) {
+  await page.getByRole('combobox', { name: 'Carrier' }).click();
+  await page.getByRole('option', { name: label, exact: true }).click();
+}
+
+async function registerShipment(page: Page, trackingNumber: string, carrierLabel?: string) {
   await page.goto('/shipments/new');
   await page.getByLabel('Customer reference').fill('cust-e2e');
   await page.getByLabel('Tracking number').fill(trackingNumber);
+  if (carrierLabel) {
+    await chooseCarrier(page, carrierLabel);
+  }
   await page.getByLabel('Estimated delivery date (optional)').fill('2026-08-12');
   await page.getByRole('button', { name: 'Register shipment' }).click();
+}
+
+/** Uses the "Find by tracking number" form on the Shipments page. */
+async function lookUp(page: Page, carrierLabel: string, trackingNumber: string) {
+  await page.goto('/shipments');
+  const lookup = page.getByRole('search', { name: 'Find by tracking number' });
+  await lookup.getByRole('combobox', { name: 'Carrier' }).click();
+  await page.getByRole('option', { name: carrierLabel, exact: true }).click();
+  await lookup.getByLabel('Tracking number').fill(trackingNumber);
+  await lookup.getByRole('button', { name: 'Find' }).click();
 }
 
 test.describe.serial('shipment workflow against the real stack', () => {
@@ -152,14 +170,45 @@ test.describe.serial('shipment workflow against the real stack', () => {
     await expect(page.getByRole('link', { name: TRACKING_NUMBER })).toBeVisible();
   });
 
-  test('a duplicate registration is rejected with a clear message', async ({ page }) => {
+  test('a duplicate registration is rejected and leads to the existing shipment', async ({ page }) => {
     test.skip(!shipmentId, 'depends on the workflow test');
     await page.goto('/dashboard');
     await selectRetailer(page, RETAILER);
     await registerShipment(page, TRACKING_NUMBER);
-    await expect(page.getByRole('alert').filter({ hasText: 'Already registered' })).toBeVisible();
+    const callout = page.getByRole('alert').filter({ hasText: 'Already registered' });
+    await expect(callout).toBeVisible();
     await expect(page.getByText('Already registered for this carrier.')).toBeVisible();
     await expect(page).toHaveURL(/\/shipments\/new$/);
+
+    // Duplicate -> lookup -> the shipment the registration collided with.
+    await callout.getByRole('button', { name: 'Open existing shipment' }).click();
+    await expect(page).toHaveURL(new RegExp(`/shipments/${shipmentId}$`));
+    await expect(page.getByTestId('current-status')).toHaveAttribute('data-status', 'DELIVERED');
+  });
+
+  test('a shipment is found by carrier and tracking number, exactly', async ({ page }) => {
+    test.skip(!shipmentId, 'depends on the workflow test');
+
+    // Found: lands on the details page of the registered shipment.
+    await lookUp(page, 'SwiftPost', `  ${TRACKING_NUMBER}  `);
+    await expect(page).toHaveURL(new RegExp(`/shipments/${shipmentId}$`));
+    await expect(page.getByTestId('current-status')).toHaveAttribute('data-status', 'DELIVERED');
+
+    // Case-sensitive, like the duplicate check: a different case is a different number.
+    await lookUp(page, 'SwiftPost', TRACKING_NUMBER.toLowerCase());
+    await expect(page.getByTestId('lookup-not-found')).toContainText('No SwiftPost shipment has this tracking number.');
+    await expect(page).toHaveURL(/\/shipments$/);
+
+    // Carrier-scoped: the same number under another carrier is not this shipment.
+    await lookUp(page, 'Pacifica', TRACKING_NUMBER);
+    await expect(page.getByTestId('lookup-not-found')).toContainText('No Pacifica shipment');
+
+    // Client-side validation: nothing is sent for a blank number.
+    await page.goto('/shipments');
+    const lookup = page.getByRole('search', { name: 'Find by tracking number' });
+    await lookup.getByLabel('Tracking number').fill('   ');
+    await lookup.getByRole('button', { name: 'Find' }).click();
+    await expect(lookup.getByText('Enter a tracking number.')).toBeVisible();
   });
 
   test('an invalid carrier event lands in failed events and is not retryable', async ({ page }) => {
@@ -185,5 +234,26 @@ test.describe.serial('shipment workflow against the real stack', () => {
     await expect(page.getByText('Not retryable', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /Retry/ })).toHaveCount(0);
     await expect(page.getByText('deliberately not returned')).toBeVisible();
+  });
+
+  // Last on purpose: it registers a second shipment for the run's retailer, which the listing
+  // test above would otherwise have to account for.
+  test('identical tracking numbers under two carriers are two shipments, each found by its carrier', async ({
+    page,
+  }) => {
+    test.skip(!shipmentId, 'depends on the workflow test');
+    await page.goto('/dashboard');
+    await selectRetailer(page, RETAILER);
+    await registerShipment(page, TRACKING_NUMBER, 'Pacifica');
+    await expect(page).toHaveURL(/\/shipments\/[0-9a-f-]{36}$/);
+    const pacificaId = page.url().split('/').pop() ?? '';
+    expect(pacificaId).not.toBe(shipmentId);
+
+    await lookUp(page, 'Pacifica', TRACKING_NUMBER);
+    await expect(page).toHaveURL(new RegExp(`/shipments/${pacificaId}$`));
+    await expect(page.getByTestId('current-status')).toHaveAttribute('data-status', 'LABEL_CREATED');
+
+    await lookUp(page, 'SwiftPost', TRACKING_NUMBER);
+    await expect(page).toHaveURL(new RegExp(`/shipments/${shipmentId}$`));
   });
 });

@@ -1,5 +1,6 @@
 package ca.vm.parcelflow.shipment;
 
+import ca.vm.parcelflow.carrier.CarrierCode;
 import ca.vm.parcelflow.infrastructure.config.CacheConfiguration;
 import ca.vm.parcelflow.shipment.api.ShipmentResponse;
 import ca.vm.parcelflow.shipment.domain.Shipment;
@@ -89,6 +90,35 @@ public class ShipmentService {
         if (!shipmentRepository.existsById(shipmentId)) {
             throw new ShipmentNotFoundException(shipmentId);
         }
+    }
+
+    /**
+     * The read behind {@code GET /api/shipments/lookup}: resolves a carrier's tracking number to
+     * the shipment registered under it.
+     *
+     * <p>Matching is exact. The tracking number is compared verbatim — case-sensitive, untrimmed —
+     * because that is how {@link #registerShipment} stores it and how the
+     * {@code (carrier_code, tracking_number)} unique constraint compares it. Normalizing here and
+     * not there would let a lookup find a different row than the one a registration collided with.
+     * The same constraint's index serves this query, so no extra index is needed.
+     *
+     * <p>Not cached. A lookup is a one-off navigation step; the shipment's subsequent reads go
+     * through {@link #getShipmentTracking}, which is. Caching under a second key would add a second
+     * entry for the event pipeline to evict.
+     *
+     * <p>This is the single place a future retailer-ownership check belongs: compare the caller's
+     * retailer with {@code shipment.getRetailerId()} and, on a mismatch, throw the same
+     * {@link TrackingNumberNotFoundException} so a non-owner cannot tell "not yours" from "does not
+     * exist" and enumerate other retailers' tracking numbers.
+     *
+     * @throws TrackingNumberNotFoundException if no shipment matches
+     */
+    @Transactional(readOnly = true)
+    public ShipmentResponse lookupShipment(CarrierCode carrierCode, String trackingNumber) {
+        return shipmentRepository
+                .findByCarrierCodeAndTrackingNumber(carrierCode, trackingNumber)
+                .map(ShipmentResponse::from)
+                .orElseThrow(() -> new TrackingNumberNotFoundException(carrierCode, trackingNumber));
     }
 
     @Transactional(readOnly = true)

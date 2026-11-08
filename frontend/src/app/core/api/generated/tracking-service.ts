@@ -97,6 +97,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/shipments/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Find a shipment by carrier and tracking number
+         * @description Resolves the carrier-issued tracking number to the shipment registered under it. A tracking number is unique per carrier, not globally, so the carrier is required. Matching is exact: case-sensitive and not trimmed, the same comparison the duplicate-registration check uses. Read from PostgreSQL, not the cache.
+         */
+        get: operations["lookupShipment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/shipments/{shipmentId}": {
         parameters: {
             query?: never;
@@ -290,6 +310,34 @@ export interface components {
             totalElements: number;
             /** Format: int32 */
             totalPages: number;
+        };
+        /** @description RFC 9457 problem document. Branch on `type`, not on `title` or `detail`. Problem-specific extension members (for example `carrierCode` and `trackingNumber` on shipment-not-found) appear at the top level. */
+        Problem: {
+            /** @example No shipment found for carrier SWIFTPOST and tracking number SP-12345 */
+            detail: string;
+            /** @description Parameter or field name to message. Present on validation failures. */
+            errors: {
+                [key: string]: string;
+            };
+            /**
+             * Format: uri
+             * @example /api/shipments/lookup
+             */
+            instance: string;
+            /**
+             * Format: int32
+             * @example 404
+             */
+            status: number;
+            /** @example Shipment not found */
+            title: string;
+            /**
+             * Format: uri
+             * @example https://parcelflow.example/problems/shipment-not-found
+             */
+            type: string;
+        } & {
+            [key: string]: unknown;
         };
         /** @description Registers a parcel for tracking */
         RegisterShipmentRequest: {
@@ -533,6 +581,55 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["ShipmentResponse"];
+                };
+            };
+        };
+    };
+    lookupShipment: {
+        parameters: {
+            query: {
+                /**
+                 * @description Carrier that issued the tracking number
+                 * @example SWIFTPOST
+                 */
+                carrierCode: "SWIFTPOST" | "NORDEX" | "PACIFICA" | "METROLINK";
+                /**
+                 * @description Carrier-issued tracking number, matched exactly
+                 * @example SP100000000042
+                 */
+                trackingNumber: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The matching shipment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["ShipmentResponse"];
+                };
+            };
+            /** @description A parameter is missing, blank, too long, or not a known carrier code */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No shipment is registered for this carrier and tracking number */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };

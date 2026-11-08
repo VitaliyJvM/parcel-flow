@@ -110,6 +110,25 @@ Real controller, real bean validation, real Jackson 3, real PostgreSQL.
 The registration test also asserts the response body contains neither `customerId` nor its value,
 enforcing the write-only rule at the contract level.
 
+### `ShipmentLookupApiIntegrationTest` — 16 tests, `GET /api/shipments/lookup`
+
+Same base class and profile as `ShipmentApiIntegrationTest`, so it shares that Spring context.
+
+| Case | Expected |
+|---|---|
+| registered carrier + tracking number | `200`, the same `ShipmentResponse` as a read by id, no `customerId` |
+| unknown tracking number | `404` `shipment-not-found` with `carrierCode` and `trackingNumber`, no `shipmentId` |
+| same number under SWIFTPOST and PACIFICA | two shipments; each carrier resolves to its own |
+| number registered for another carrier | `404` |
+| different case (`SP-CASE-A` vs `sp-case-a`) | matched exactly, like the unique constraint; a third casing is `404` |
+| surrounding whitespace | not trimmed: `404`, with the padded value echoed |
+| `/`, `%`, `?`, `#`, `&`, `=`, `+` in the number | round-trip through the query string |
+| `GET /api/shipments/lookup` with no parameters | `400 validation-failed`, proving `/lookup` is not routed to `/{shipmentId}` |
+| missing / empty `carrierCode`, missing `trackingNumber` | `400 validation-failed` with the parameter in `errors` (previously a missing parameter fell through to the catch-all `500`) |
+| blank or 129-character `trackingNumber` | `400 validation-failed`; 128 characters is accepted |
+| unknown or lower-case `carrierCode` | `400 malformed-request`, no internals leaked |
+| caller-supplied `X-Correlation-Id` | echoed on `200`, `404` and `400` |
+
 ### `OperationalEndpointsIntegrationTest` — 4 tests at Stage 1, 11 now
 
 Guards the surfaces that break silently during dependency upgrades:

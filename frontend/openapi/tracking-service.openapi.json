@@ -298,6 +298,43 @@
         },
         "type": "object"
       },
+      "Problem": {
+        "additionalProperties": true,
+        "description": "RFC 9457 problem document. Branch on `type`, not on `title` or `detail`. Problem-specific extension members (for example `carrierCode` and `trackingNumber` on shipment-not-found) appear at the top level.",
+        "properties": {
+          "detail": {
+            "example": "No shipment found for carrier SWIFTPOST and tracking number SP-12345",
+            "type": "string"
+          },
+          "errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Parameter or field name to message. Present on validation failures.",
+            "type": "object"
+          },
+          "instance": {
+            "example": "/api/shipments/lookup",
+            "format": "uri",
+            "type": "string"
+          },
+          "status": {
+            "example": 404,
+            "format": "int32",
+            "type": "integer"
+          },
+          "title": {
+            "example": "Shipment not found",
+            "type": "string"
+          },
+          "type": {
+            "example": "https://parcelflow.example/problems/shipment-not-found",
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "RegisterShipmentRequest": {
         "description": "Registers a parcel for tracking",
         "properties": {
@@ -749,6 +786,78 @@
           }
         },
         "summary": "Register a shipment for tracking",
+        "tags": [
+          "Shipments"
+        ]
+      }
+    },
+    "/api/shipments/lookup": {
+      "get": {
+        "description": "Resolves the carrier-issued tracking number to the shipment registered under it. A tracking number is unique per carrier, not globally, so the carrier is required. Matching is exact: case-sensitive and not trimmed, the same comparison the duplicate-registration check uses. Read from PostgreSQL, not the cache.",
+        "operationId": "lookupShipment",
+        "parameters": [
+          {
+            "description": "Carrier that issued the tracking number",
+            "example": "SWIFTPOST",
+            "in": "query",
+            "name": "carrierCode",
+            "required": true,
+            "schema": {
+              "enum": [
+                "SWIFTPOST",
+                "NORDEX",
+                "PACIFICA",
+                "METROLINK"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Carrier-issued tracking number, matched exactly",
+            "example": "SP100000000042",
+            "in": "query",
+            "name": "trackingNumber",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 0,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentResponse"
+                }
+              }
+            },
+            "description": "The matching shipment"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A parameter is missing, blank, too long, or not a known carrier code"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No shipment is registered for this carrier and tracking number"
+          }
+        },
+        "summary": "Find a shipment by carrier and tracking number",
         "tags": [
           "Shipments"
         ]

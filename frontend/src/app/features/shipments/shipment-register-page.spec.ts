@@ -131,6 +131,59 @@ describe('ShipmentRegisterPage', () => {
     expect(el.textContent).not.toContain('Already registered for this carrier.');
   });
 
+  it('offers to open the existing shipment after a 409, looking it up by the echoed pair', async () => {
+    const fixture = await setup();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const el = fixture.nativeElement as HTMLElement;
+    fill(el, 'customerId', 'cust-1');
+    fill(el, 'trackingNumber', 'SP900');
+    submit(el);
+    const { body, opts } = problem(409, 'duplicate-tracking-number', {
+      carrierCode: 'SWIFTPOST',
+      trackingNumber: 'SP900',
+    });
+    http.expectOne('/api/shipments').flush(body, opts);
+    await fixture.whenStable();
+
+    const callout = el.querySelector('.pf-callout-warning');
+    expect(callout?.textContent).toContain('already registered for SwiftPost');
+    const open = Array.from(callout?.querySelectorAll('button') ?? []).find((b) =>
+      b.textContent?.includes('Open existing shipment'),
+    );
+    expect(open).toBeDefined();
+    open?.click();
+
+    const lookup = http.expectOne((r) => r.url === '/api/shipments/lookup');
+    expect(lookup.request.params.get('carrierCode')).toBe('SWIFTPOST');
+    expect(lookup.request.params.get('trackingNumber')).toBe('SP900');
+    lookup.flush(shipment({ shipmentId: 'existing-id', retailerId: 'retailer-7' }));
+    await fixture.whenStable();
+    expect(navigate).toHaveBeenCalledWith(['/shipments', 'existing-id']);
+    // Opening someone else's shipment does not switch the selected retailer.
+    expect(TestBed.inject(RetailerContext).retailerId()).toBe('retailer-42');
+  });
+
+  it('shows a form-level error when the existing shipment cannot be opened', async () => {
+    const fixture = await setup();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const el = fixture.nativeElement as HTMLElement;
+    fill(el, 'customerId', 'cust-1');
+    fill(el, 'trackingNumber', 'SP900');
+    submit(el);
+    const conflict = problem(409, 'duplicate-tracking-number', { carrierCode: 'SWIFTPOST', trackingNumber: 'SP900' });
+    http.expectOne('/api/shipments').flush(conflict.body, conflict.opts);
+    await fixture.whenStable();
+
+    Array.from(el.querySelectorAll('button'))
+      .find((b) => b.textContent?.includes('Open existing shipment'))
+      ?.click();
+    const missing = problem(404, 'shipment-not-found', {}, 'corr-gone');
+    http.expectOne((r) => r.url === '/api/shipments/lookup').flush(missing.body, missing.opts);
+    await fixture.whenStable();
+    expect(el.querySelector('pf-error-panel')?.textContent).toContain('corr-gone');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('maps backend validation errors onto their controls', async () => {
     const fixture = await setup();
     const el = fixture.nativeElement as HTMLElement;

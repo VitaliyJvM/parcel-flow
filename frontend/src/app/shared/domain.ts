@@ -39,6 +39,12 @@ export const SHIPMENT_STATUS_META: Record<
   DELIVERED: { label: 'Delivered', icon: 'check_circle', tone: 'success' },
 };
 
+/**
+ * `@Size(max = 128)` on `RegisterShipmentRequest.trackingNumber` and on the lookup endpoint's
+ * `trackingNumber` parameter; also the `shipments.tracking_number` column width.
+ */
+export const TRACKING_NUMBER_MAX_LENGTH = 128;
+
 export const CARRIERS: readonly CarrierCode[] = ['SWIFTPOST', 'PACIFICA', 'NORDEX', 'METROLINK'];
 
 /**

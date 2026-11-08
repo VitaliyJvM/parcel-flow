@@ -29,8 +29,8 @@
         mat-icon-button
         type="button"
         class="pf-info-button"
-        matTooltip="Shipments are addressed by ID. The API has no lookup by tracking number."
-        aria-label="Why open by ID?"
+        matTooltip="Opens a shipment by its ParcelFlow ID. To search by the carrier's tracking number, use “Find by tracking number” below."
+        aria-label="About opening by ID"
       >
         <mat-icon aria-hidden="true">info</mat-icon>
       </button>
@@ -41,6 +41,9 @@
     </a>
   </div>
 </header>
+
+<!-- Outside the retailer gate: like "open by ID", a lookup is not scoped to the selected retailer. -->
+<pf-shipment-lookup-form />
 
 @if (!retailer.retailerId()) {
   <pf-retailer-required />
