@@ -109,6 +109,7 @@ its own deployment.
 
 | Concern | Choice |
 |---|---|
+| **Backend** | |
 | Language | Java 25 |
 | Framework | Spring Boot 4.1 (Spring Framework 7) |
 | Build | Gradle 9.5 multi-project, wrapper included |
@@ -118,11 +119,20 @@ its own deployment.
 | API docs | springdoc-openapi 3.1 (OpenAPI 3.1) |
 | Observability | Spring Boot Actuator, Micrometer, Prometheus, Grafana, Micrometer Tracing (Brave) |
 | Logging | ECS-structured JSON via Spring Boot's built-in structured logging |
-| Testing | JUnit 6, AssertJ, MockMvc, Awaitility, Testcontainers 2 |
+| Backend testing | JUnit 6, AssertJ, MockMvc, Awaitility, Testcontainers 2 |
+| **Frontend** | |
+| Framework | Angular 22, TypeScript 6.0 — standalone components, Signals, RxJS |
+| UI | Angular Material and CDK, SCSS |
+| Tooling | Node.js 24 LTS, npm, Angular CLI |
+| API client | Angular `HttpClient` with TypeScript types generated from the OpenAPI contract (`openapi-typescript`) |
+| Assets | Self-hosted Roboto and a subset Material Symbols font (no CDN) |
+| Serving | nginx (unprivileged) serving the SPA and reverse-proxying `/api/` same-origin, so no CORS |
+| Frontend testing | Vitest (unit, via the Angular CLI), Playwright (end-to-end against the real stack) |
+| **Delivery** | |
 | Load testing | k6 |
-| Quality | Checkstyle, JaCoCo, OWASP Dependency-Check, SonarQube Community Build |
+| Quality | Checkstyle, JaCoCo, OWASP Dependency-Check, SonarQube Cloud (backend); ESLint, Prettier (frontend) |
 | CI | GitHub Actions |
-| Packaging | Docker multi-stage build, Docker Compose |
+| Packaging | Docker multi-stage builds, Docker Compose |
 
 Spring Boot 4 notes worth knowing if you build on this: the web starter is now
 `spring-boot-starter-webmvc`, Flyway needs `spring-boot-starter-flyway`, MockMvc test support moved
