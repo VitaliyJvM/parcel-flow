@@ -1,0 +1,77 @@
+<a class="pf-skip-link" href="#main">Skip to content</a>
+
+<mat-toolbar class="pf-toolbar">
+  @if (isHandset()) {
+    <button mat-icon-button type="button" aria-label="Toggle navigation" (click)="sidenav.toggle()">
+      <mat-icon aria-hidden="true">menu</mat-icon>
+    </button>
+  }
+  <a routerLink="/dashboard" class="pf-brand">
+    <mat-icon aria-hidden="true">deployed_code</mat-icon>
+    <span>ParcelFlow</span>
+  </a>
+  <span class="pf-spacer"></span>
+  <!-- A view filter, not a login: labelled "Retailer", never "Signed in as". -->
+  <button
+    mat-stroked-button
+    type="button"
+    class="pf-retailer-button"
+    (click)="void retailerDialog.open()"
+    [attr.aria-label]="
+      retailer.retailerId()
+        ? 'Retailer: ' + retailer.retailerId() + '. Change retailer'
+        : 'Select retailer'
+    "
+  >
+    <mat-icon aria-hidden="true">storefront</mat-icon>
+    @if (retailer.retailerId(); as retailerId) {
+      <span class="pf-retailer-caption">Retailer</span>
+      <span class="pf-retailer-label">{{ retailerId }}</span>
+    } @else {
+      <span class="pf-retailer-label">Select retailer</span>
+    }
+  </button>
+</mat-toolbar>
+
+<div class="pf-demo-banner" role="note">
+  <mat-icon aria-hidden="true">shield</mat-icon>
+  <span>
+    <strong>Local demo — no authentication.</strong>
+    <span class="pf-banner-extra"> Every API endpoint, including admin retry, is open.</span>
+  </span>
+  <a routerLink="/about">What this means</a>
+</div>
+
+<mat-sidenav-container class="pf-container">
+  <mat-sidenav
+    #sidenav
+    [mode]="sidenavMode()"
+    [opened]="!isHandset()"
+    class="pf-sidenav"
+    aria-label="Main navigation"
+  >
+    <mat-nav-list>
+      @for (item of nav; track item.path) {
+        <a
+          mat-list-item
+          [routerLink]="item.path"
+          routerLinkActive
+          #rla="routerLinkActive"
+          [routerLinkActiveOptions]="{ exact: item.exact ?? false }"
+          [activated]="rla.isActive"
+          [attr.aria-current]="rla.isActive ? 'page' : null"
+          (click)="closeOnHandset()"
+        >
+          <mat-icon matListItemIcon aria-hidden="true">{{ item.icon }}</mat-icon>
+          <span matListItemTitle>{{ item.label }}</span>
+        </a>
+      }
+    </mat-nav-list>
+  </mat-sidenav>
+
+  <mat-sidenav-content>
+    <main id="main" class="pf-main" tabindex="-1">
+      <router-outlet />
+    </main>
+  </mat-sidenav-content>
+</mat-sidenav-container>

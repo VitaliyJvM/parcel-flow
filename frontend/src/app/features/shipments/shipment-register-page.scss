@@ -1,0 +1,18 @@
+.pf-register {
+  max-width: 880px;
+}
+
+.pf-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: 8px 16px;
+}
+
+mat-form-field {
+  width: 100%;
+}
+
+.pf-carrier-note {
+  font: var(--mat-sys-body-small);
+  margin: 8px 0 16px;
+}

@@ -1,0 +1,422 @@
+@use '@angular/material' as mat;
+
+// --- Fonts -----------------------------------------------------------------------------------
+// Everything is self-hosted; there are no external font requests.
+//
+// Roboto (400/500/700, Latin + Latin Extended) comes from @fontsource/roboto via the `styles`
+// array in angular.json. Each subset is a separate file selected by unicode-range, so a browser
+// downloads only the weights and scripts a page actually renders.
+//
+// Material Symbols Outlined is a subset holding only the icons the app uses (FILL 0, wght 400,
+// GRAD 0, opsz 24), generated from @fontsource-variable/material-symbols-outlined by
+// scripts/subset-material-symbols.py. `npm run lint` fails if a template uses an icon that is not
+// in src/assets/fonts/material-symbols.icons.txt. Licenses: public/licenses/fonts/.
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400;
+  // block, not swap: a swapped-in fallback font would flash icon names as text.
+  font-display: block;
+  src: url('./assets/fonts/material-symbols-outlined-subset.woff2') format('woff2');
+}
+
+// MatIconRegistry.setDefaultFontSetClass('material-symbols-outlined') puts this class on every
+// <mat-icon>; the icon name is shaped into a glyph by the font's ligatures. Same rules as the
+// class Google Fonts used to provide, including its 24px default size: .mat-icon only sizes the
+// box, so without it an icon with no component-level size would inherit the body's 14px.
+// Component rules (.pf-tag mat-icon, Material buttons and lists) still override it.
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+// Material 3 theme. `color-scheme: light dark` follows the OS setting; every custom colour below
+// uses Material system variables so both schemes stay consistent.
+html {
+  height: 100%;
+  color-scheme: light dark;
+  @include mat.theme(
+    (
+      color: (
+        primary: mat.$azure-palette,
+        tertiary: mat.$orange-palette,
+      ),
+      typography: Roboto,
+      density: 0,
+    )
+  );
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  background-color: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-body-medium);
+}
+
+// Status palette (semantic, theme-aware via light-dark()).
+:root {
+  --pf-success: light-dark(#1b6b35, #8fd8a2);
+  --pf-success-bg: light-dark(#d6f5dd, #12391d);
+  --pf-warning: light-dark(#8a4b00, #ffb874);
+  --pf-warning-bg: light-dark(#ffe6cc, #4a2800);
+  --pf-progress: var(--mat-sys-primary);
+  --pf-progress-bg: var(--mat-sys-primary-container);
+  --pf-neutral: var(--mat-sys-on-surface-variant);
+  --pf-neutral-bg: var(--mat-sys-surface-container-high);
+}
+
+code,
+.pf-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+h1.pf-title {
+  font: var(--mat-sys-headline-small);
+  margin: 0;
+}
+
+.pf-subtitle {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.pf-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-bottom: 20px;
+
+  p {
+    margin: 4px 0 0;
+  }
+}
+
+.pf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pf-actions.pf-center {
+  justify-content: center;
+}
+
+.pf-muted {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.pf-label {
+  font: var(--mat-sys-label-medium);
+  color: var(--mat-sys-on-surface-variant);
+  margin: 0 0 4px;
+}
+
+.pf-full {
+  width: 100%;
+}
+
+.pf-card {
+  display: block;
+  background: var(--mat-sys-surface-container-low);
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: var(--mat-sys-corner-medium, 12px);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+
+  > h2 {
+    font: var(--mat-sys-title-medium);
+    margin: 0 0 12px;
+  }
+}
+
+// Card heading row: title on the left, optional info/actions on the right.
+.pf-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: -4px 0 12px;
+
+  h2 {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font: var(--mat-sys-title-medium);
+    margin: 0;
+  }
+}
+
+// Small round info button carrying a tooltip (keyboard-focusable, unlike a bare icon).
+.pf-info-button {
+  --mat-icon-button-state-layer-size: 32px;
+  padding: 4px !important;
+  color: var(--mat-sys-on-surface-variant);
+
+  mat-icon {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.pf-nowrap {
+  white-space: nowrap;
+}
+
+// A value with a trailing action (copy button) that must stay on the same line.
+.pf-with-action {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+// Two-line clamp for long free text in tables; the full text stays in the DOM (screen readers
+// read all of it) and is shown in a tooltip.
+.pf-clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+// Long unbroken tokens (UUIDs, fully qualified class names) wrap at any character instead of
+// overflowing their column.
+.pf-break {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+// A native button that looks like an inline link (e.g. "triggered by SP_PICKUP #2").
+.pf-link-button {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--mat-sys-primary);
+  text-decoration: underline;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+// Visible keyboard focus for the few native buttons/links styled without Material.
+.pf-focus-ring:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--mat-sys-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.pf-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+}
+
+// Definition list used on detail pages.
+.pf-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 12px 24px;
+  margin: 0;
+
+  dt {
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-on-surface-variant);
+  }
+
+  dd {
+    margin: 2px 0 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.pf-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 2px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-medium);
+  white-space: nowrap;
+  color: var(--pf-neutral);
+  background: var(--pf-neutral-bg);
+
+  mat-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.pf-tone-success {
+  color: var(--pf-success);
+  background: var(--pf-success-bg);
+}
+
+.pf-tone-warning {
+  color: var(--pf-warning);
+  background: var(--pf-warning-bg);
+}
+
+.pf-tone-progress {
+  color: var(--mat-sys-on-primary-container);
+  background: var(--pf-progress-bg);
+}
+
+.pf-callout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  background: var(--mat-sys-surface-container-high);
+
+  > mat-icon {
+    flex: none;
+  }
+
+  p {
+    margin: 4px 0 0;
+  }
+
+  ul {
+    margin: 4px 0 0;
+    padding-left: 20px;
+  }
+}
+
+.pf-callout-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pf-callout-error {
+  background: var(--mat-sys-error-container);
+  color: var(--mat-sys-on-error-container);
+}
+
+.pf-callout-warning {
+  background: var(--pf-warning-bg);
+  color: var(--pf-warning);
+}
+
+.pf-callout-success {
+  background: var(--pf-success-bg);
+  color: var(--pf-success);
+}
+
+.pf-callout-info {
+  background: var(--mat-sys-secondary-container);
+  color: var(--mat-sys-on-secondary-container);
+}
+
+.pf-correlation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pf-empty {
+  text-align: center;
+  padding: 40px 16px;
+  color: var(--mat-sys-on-surface-variant);
+
+  > mat-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+  }
+
+  h2 {
+    font: var(--mat-sys-title-large);
+    color: var(--mat-sys-on-surface);
+  }
+
+  p {
+    max-width: 60ch;
+    margin: 8px auto 16px;
+  }
+}
+
+// Tables scroll horizontally inside their card instead of widening the page.
+.pf-table-wrap {
+  overflow-x: auto;
+
+  table {
+    width: 100%;
+    min-width: 640px;
+  }
+}
+
+tr.pf-row-link {
+  cursor: pointer;
+
+  &:hover,
+  &:focus-within {
+    background: var(--mat-sys-surface-container-high);
+  }
+}
+
+.pf-visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+a {
+  color: var(--mat-sys-primary);
+}
+
+pre.pf-command {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--mat-sys-inverse-surface);
+  color: var(--mat-sys-inverse-on-surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,115 @@
+<form [formGroup]="form" class="pf-sim" (submit)="$event.preventDefault()">
+  @if (unsupportedCarrier()) {
+    <div class="pf-callout pf-callout-warning" role="note">
+      <mat-icon aria-hidden="true">block</mat-icon>
+      <div class="pf-callout-body">
+        This shipment's carrier ({{ carrier() }}) has no event script in the simulator and no
+        normalizer in the tracking service. The simulator supports SWIFTPOST and PACIFICA only.
+      </div>
+    </div>
+  }
+
+  <!-- subscriptSizing="dynamic" everywhere: hint/error text takes real layout space and wraps,
+       instead of overflowing into the element below. -->
+  <div class="pf-sim-section">
+    <mat-form-field subscriptSizing="dynamic" class="pf-scenario-field">
+      <mat-label>Scenario</mat-label>
+      <mat-select formControlName="scenario">
+        @for (s of scenarios; track s.id) {
+          <mat-option [value]="s.id"><span class="pf-scenario-name">{{ s.id }}</span></mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+
+    <div class="pf-scenario-card" aria-live="polite" data-testid="scenario-explanation">
+      <p class="pf-scenario-summary">
+        <span class="pf-scenario-name">{{ selectedScenario().id }}</span> — {{ selectedScenario().summary }}
+      </p>
+      <p class="pf-scenario-observe">
+        <mat-icon class="pf-inline-icon" aria-hidden="true">visibility</mat-icon>
+        <strong>What to observe:</strong> {{ selectedScenario().observe }}
+        @if (selectedScenario().showsIn === 'failed-events') {
+          <a routerLink="/operations/failed-events">Open failed events</a>
+        }
+      </p>
+    </div>
+  </div>
+
+  <fieldset class="pf-sim-section pf-fieldset">
+    <legend class="pf-label">
+      Shipment
+      @if (locked()) {
+        <span class="pf-muted"> · prefilled from this shipment</span>
+      }
+    </legend>
+    <div class="pf-sim-fields">
+      <mat-form-field subscriptSizing="dynamic" class="pf-wide-field">
+        <mat-label>Shipment ID</mat-label>
+        <input matInput formControlName="shipmentId" class="pf-mono" autocomplete="off" spellcheck="false" />
+        @if (form.controls.shipmentId.hasError('pattern')) {
+          <mat-error>Must be a shipment UUID.</mat-error>
+        } @else if (form.controls.shipmentId.hasError('required')) {
+          <mat-error>Required.</mat-error>
+        }
+      </mat-form-field>
+      <mat-form-field subscriptSizing="dynamic">
+        <mat-label>Tracking number</mat-label>
+        <input matInput formControlName="trackingNumber" class="pf-mono" autocomplete="off" spellcheck="false" />
+        @if (form.controls.trackingNumber.invalid) {
+          <mat-error>Required.</mat-error>
+        }
+      </mat-form-field>
+      <mat-form-field subscriptSizing="dynamic">
+        <mat-label>Carrier</mat-label>
+        <mat-select formControlName="carrier">
+          @for (c of carriers; track c) {
+            <mat-option [value]="c">{{ carrierMeta[c].label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+    </div>
+  </fieldset>
+
+  <fieldset class="pf-sim-section pf-fieldset">
+    <legend class="pf-label">Optional parameters</legend>
+    <div class="pf-sim-fields">
+      <!-- type="text" + inputmode, not type="number": the value must stay an exact string
+           (a JS number cannot hold every Java long). -->
+      <mat-form-field subscriptSizing="dynamic">
+        <mat-label>Delay between events (ms)</mat-label>
+        <input matInput type="text" inputmode="numeric" formControlName="delayMs" placeholder="500" autocomplete="off" spellcheck="false" />
+        @if (form.controls.delayMs.hasError('integer')) {
+          <mat-error>Whole number of milliseconds, e.g. 250.</mat-error>
+        } @else if (form.controls.delayMs.hasError('javaLongRange')) {
+          <mat-error>Must be between 0 and {{ longMax }}.</mat-error>
+        } @else {
+          <mat-hint>Simulator default: 500 ms.</mat-hint>
+        }
+      </mat-form-field>
+      <mat-form-field subscriptSizing="dynamic">
+        <mat-label>Seed</mat-label>
+        <input matInput type="text" inputmode="numeric" formControlName="seed" placeholder="random" autocomplete="off" spellcheck="false" />
+        @if (form.controls.seed.hasError('integer')) {
+          <mat-error>Whole number, e.g. 42 (no decimals or exponents).</mat-error>
+        } @else if (form.controls.seed.hasError('javaLongRange')) {
+          <mat-error>Must be a Java long: {{ longMin }} to {{ longMax }}.</mat-error>
+        } @else {
+          <mat-hint>Same seed ⇒ same event IDs, so a re-run is deduplicated.</mat-hint>
+        }
+      </mat-form-field>
+    </div>
+  </fieldset>
+
+  <div class="pf-command-head">
+    <p class="pf-label">Run from the repository root (the Compose stack must be up)</p>
+    @if (command(); as cmd) {
+      <pf-copy-button [value]="cmd" label="Copy command" />
+    }
+  </div>
+  @if (command(); as cmd) {
+    <pre class="pf-command" data-testid="simulator-command">{{ cmd }}</pre>
+  } @else {
+    <p class="pf-muted" data-testid="simulator-command-missing">Fix the highlighted fields to generate the command.</p>
+  }
+  <p class="pf-muted pf-small">The browser only builds this command; it never runs it.</p>
+</form>

@@ -1,0 +1,167 @@
+<header class="pf-page-header">
+  <div>
+    <h1 class="pf-title">Shipments</h1>
+    @if (retailer.retailerId(); as retailerId) {
+      <p class="pf-subtitle">Retailer <strong>{{ retailerId }}</strong> · newest first</p>
+    }
+  </div>
+  <div class="pf-actions pf-list-actions">
+    <form class="pf-open-by-id" (submit)="$event.preventDefault(); submitOpenById()" novalidate role="search" aria-label="Open shipment by ID">
+      <mat-form-field subscriptSizing="dynamic" hideRequiredMarker>
+        <mat-label>Open by shipment ID</mat-label>
+        <mat-icon matPrefix aria-hidden="true">search</mat-icon>
+        <input matInput [formControl]="openById" placeholder="UUID" autocomplete="off" spellcheck="false" />
+        <button
+          mat-icon-button
+          matSuffix
+          type="submit"
+          [disabled]="openById.invalid"
+          aria-label="Open shipment"
+          matTooltip="Open shipment"
+        >
+          <mat-icon aria-hidden="true">arrow_forward</mat-icon>
+        </button>
+        @if (openById.hasError('pattern')) {
+          <mat-error>Enter a shipment UUID.</mat-error>
+        }
+      </mat-form-field>
+      <button
+        mat-icon-button
+        type="button"
+        class="pf-info-button"
+        matTooltip="Shipments are addressed by ID. The API has no lookup by tracking number."
+        aria-label="Why open by ID?"
+      >
+        <mat-icon aria-hidden="true">info</mat-icon>
+      </button>
+    </form>
+    <a mat-flat-button routerLink="/shipments/new">
+      <mat-icon aria-hidden="true">add</mat-icon>
+      Register shipment
+    </a>
+  </div>
+</header>
+
+@if (!retailer.retailerId()) {
+  <pf-retailer-required />
+} @else {
+  <section class="pf-card" aria-labelledby="shipments-heading">
+    <h2 id="shipments-heading" class="pf-visually-hidden">Shipment list</h2>
+    <div class="pf-toolbar-row">
+      <mat-form-field subscriptSizing="dynamic" class="pf-status-filter">
+        <mat-label>Current status</mat-label>
+        <!-- A sentinel instead of null: mat-select renders a null value as "nothing selected". -->
+        <mat-select
+          [value]="query().status ?? allStatuses"
+          (selectionChange)="filterBy($event.value === allStatuses ? null : $event.value)"
+          aria-label="Filter by current status"
+        >
+          <mat-option [value]="allStatuses">All statuses</mat-option>
+          @for (status of statuses; track status) {
+            <mat-option [value]="status">{{ statusMeta[status].label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      <button
+        mat-icon-button
+        type="button"
+        aria-label="Reload list"
+        (click)="shipments.reload()"
+        [disabled]="shipments.isLoading()"
+      >
+        <mat-icon aria-hidden="true">refresh</mat-icon>
+      </button>
+    </div>
+
+    @if (shipments.isLoading()) {
+      <mat-progress-bar mode="indeterminate" aria-label="Loading shipments" />
+    }
+
+    @if (error(); as e) {
+      <pf-error-panel [error]="e" context="Could not load shipments" [retryable]="true" (retry)="shipments.reload()" />
+    } @else if (shipments.value(); as page) {
+      @if (page.content.length === 0 && page.totalElements > 0) {
+        <!-- A stale or hand-edited ?page= beyond the last page: the list is not empty. -->
+        <div class="pf-empty" data-testid="page-out-of-range" role="status">
+          <mat-icon aria-hidden="true">search_off</mat-icon>
+          <h2>Page {{ page.page + 1 }} is out of range</h2>
+          <p>
+            There {{ page.totalElements === 1 ? 'is 1 shipment' : 'are ' + page.totalElements + ' shipments' }}
+            on {{ page.totalPages }} {{ page.totalPages === 1 ? 'page' : 'pages' }}.
+          </p>
+          <div class="pf-actions pf-center">
+            <button mat-flat-button type="button" (click)="goToPage(page.totalPages - 1)">
+              Go to last page ({{ page.totalPages }})
+            </button>
+            @if (page.totalPages > 1) {
+              <button mat-stroked-button type="button" (click)="goToPage(0)">First page</button>
+            }
+          </div>
+        </div>
+      } @else if (page.content.length === 0) {
+        <div class="pf-empty">
+          <mat-icon aria-hidden="true">inventory_2</mat-icon>
+          @if (query().status) {
+            <h2>No shipments with status “{{ statusMeta[query().status!].label }}”</h2>
+            <p>Try another status, or clear the filter.</p>
+            <button mat-stroked-button type="button" (click)="filterBy(null)">Clear filter</button>
+          } @else {
+            <h2>No shipments yet</h2>
+            <p>Register a shipment for {{ retailer.retailerId() }} to start tracking it.</p>
+            <a mat-flat-button routerLink="/shipments/new">Register shipment</a>
+          }
+        </div>
+      } @else {
+        <div class="pf-table-wrap">
+          <table mat-table [dataSource]="page.content" aria-label="Shipments">
+            <ng-container matColumnDef="status">
+              <th mat-header-cell *matHeaderCellDef scope="col">Status</th>
+              <td mat-cell *matCellDef="let s"><pf-status-chip [status]="s.currentStatus" /></td>
+            </ng-container>
+            <ng-container matColumnDef="trackingNumber">
+              <th mat-header-cell *matHeaderCellDef scope="col">Tracking number</th>
+              <td mat-cell *matCellDef="let s">
+                <a [routerLink]="['/shipments', s.shipmentId]" class="pf-mono pf-nowrap">{{ s.trackingNumber }}</a>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="carrier">
+              <th mat-header-cell *matHeaderCellDef scope="col">Carrier</th>
+              <td mat-cell *matCellDef="let s">{{ carrierLabel(s.carrierCode) }}</td>
+            </ng-container>
+            <ng-container matColumnDef="eta">
+              <th mat-header-cell *matHeaderCellDef scope="col">Estimated delivery</th>
+              <td mat-cell *matCellDef="let s">
+                <span class="pf-nowrap"><pf-local-date [value]="s.estimatedDeliveryDate" placeholder="—" /></span>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="lastEvent">
+              <th mat-header-cell *matHeaderCellDef scope="col">Last carrier event</th>
+              <td mat-cell *matCellDef="let s">
+                <pf-instant [value]="s.lastEventTime" format="short" placeholder="No events yet" />
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="created">
+              <th mat-header-cell *matHeaderCellDef scope="col">Registered</th>
+              <td mat-cell *matCellDef="let s"><pf-instant [value]="s.createdAt" format="short" /></td>
+            </ng-container>
+            <tr mat-header-row *matHeaderRowDef="columns"></tr>
+            <tr
+              mat-row
+              *matRowDef="let s; columns: columns"
+              class="pf-row-link"
+              (click)="open(s.shipmentId)"
+            ></tr>
+          </table>
+        </div>
+        <mat-paginator
+          [length]="page.totalElements"
+          [pageIndex]="page.page"
+          [pageSize]="page.size"
+          [pageSizeOptions]="[10, 20, 50, 100]"
+          (page)="onPage($event)"
+          aria-label="Shipment pages"
+        />
+      }
+    }
+  </section>
+}

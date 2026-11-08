@@ -1,0 +1,111 @@
+.pf-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  font: var(--mat-sys-body-small);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.pf-live {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.pf-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  background: var(--mat-sys-outline);
+
+  &.pf-live-on {
+    background: var(--pf-success);
+    box-shadow: 0 0 0 3px var(--pf-success-bg);
+  }
+}
+
+.pf-summary {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 16px 32px;
+
+  @media (max-width: 719.98px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pf-primary-facts {
+  align-content: start;
+}
+
+// Technical metadata: full width under the business facts, visually secondary.
+.pf-meta {
+  grid-column: 1 / -1;
+  padding-top: 12px;
+  border-top: 1px solid var(--mat-sys-outline-variant);
+}
+
+.pf-meta-heading {
+  font: var(--mat-sys-label-large);
+  color: var(--mat-sys-on-surface-variant);
+  margin: 0 0 8px;
+}
+
+.pf-meta-facts {
+  // Flex, not grid: the UUID needs more room than the timestamps, and items wrap naturally.
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 40px;
+  font: var(--mat-sys-body-small);
+
+  > div {
+    min-width: 0;
+  }
+
+  dt {
+    display: flex;
+    align-items: center;
+    min-height: 20px;
+  }
+
+  .pf-info-button {
+    margin: -8px 0;
+  }
+}
+
+
+.pf-status-block {
+  ::ng-deep .pf-tag {
+    font: var(--mat-sys-title-medium);
+    padding: 6px 14px 6px 10px;
+  }
+}
+
+.pf-small {
+  font: var(--mat-sys-body-small);
+}
+
+.pf-warning-text {
+  color: var(--pf-warning);
+}
+
+.pf-tabs {
+  padding: 0;
+}
+
+.pf-tab-body {
+  padding: 16px 20px;
+}
+
+.pf-count {
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  line-height: 18px;
+  background: var(--mat-sys-secondary-container);
+  color: var(--mat-sys-on-secondary-container);
+}

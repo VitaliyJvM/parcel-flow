@@ -1,7 +1,13 @@
 name: parcelflow
 
-# The whole local environment: PostgreSQL, Redpanda, Redis, the tracking service, the carrier
-# simulator, and the Prometheus + Grafana monitoring stack.
+# The whole local environment: PostgreSQL, Redpanda, Redis, the tracking service, the Angular web
+# UI, the carrier simulator, and the Prometheus + Grafana monitoring stack.
+#
+# Localhost only. Every published port is bound to 127.0.0.1: nothing in this stack has
+# authentication (the API, its admin endpoints, Redis, Grafana with anonymous Admin), so none of it
+# may be reachable from the network the laptop is on. Containers still reach each other by service
+# name on the Compose network; the bindings only affect the host side. See docs/analysis/
+# angular-frontend-implementation.md for what a real deployment would need first.
 #
 # Two services sit behind profiles so `docker compose up` does not start them:
 #
@@ -20,7 +26,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-parcelflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parcelflow}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -48,8 +54,8 @@ services:
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
-      - "19092:19092"   # Kafka API, from the host
-      - "9644:9644"     # Redpanda admin API
+      - "127.0.0.1:19092:19092"   # Kafka API, from the host
+      - "127.0.0.1:9644:9644"     # Redpanda admin API
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
@@ -66,7 +72,7 @@ services:
     # costs one database read.
     command: [ "redis-server", "--save", "", "--appendonly", "no" ]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -119,7 +125,9 @@ services:
       # reads, the endpoint silently stays disabled, and the load test gets 404 on every publish.
       PARCELFLOW_LOAD_TESTING_ENABLED: ${PARCELFLOW_LOAD_TESTING_ENABLED:-false}
     ports:
-      - "8080:8080"
+      # Direct API access (Swagger UI, curl, the Angular dev proxy). The web UI does not need it:
+      # it reaches the service over the Compose network through its own nginx.
+      - "127.0.0.1:8080:8080"
     healthcheck:
       # Readiness, not liveness: this only reports healthy once Flyway has
       # migrated and the datasource is answering.
@@ -144,7 +152,7 @@ services:
       - ./monitoring/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       # started, not healthy: Prometheus should be up and recording the target as DOWN while the
       # service starts. A monitoring system that waits for the thing it monitors cannot observe it
@@ -173,15 +181,30 @@ services:
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       prometheus:
         condition: service_started
     restart: unless-stopped
 
+  # The Angular web UI. nginx serves the static build and reverse-proxies /api/ to the tracking
+  # service, so the browser uses one origin and the backend needs no CORS configuration. It does
+  # not proxy /actuator, /internal, /v3/api-docs or /swagger-ui (see frontend/nginx/default.conf).
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      # started, not healthy: nginx resolves the backend per request, so the UI can come up first
+      # and show "service unreachable" rather than not existing at all.
+      tracking-service:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8081}:8080"
+    restart: unless-stopped
+
   # The load test. A profile, because it runs to completion and must not be started by `up`.
   #
-  #   PARCELFLOW_LOADTESTING_ENABLED=true docker compose up -d
+  #   PARCELFLOW_LOAD_TESTING_ENABLED=true docker compose up -d --force-recreate tracking-service
   #   docker compose --profile perf run --rm k6 run /scripts/parcelflow-load-test.js
   #
   # Running it in a container rather than from a local k6 install means the numbers come from the

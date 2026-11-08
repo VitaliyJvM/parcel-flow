@@ -1,0 +1,955 @@
+{
+  "components": {
+    "schemas": {
+      "FailedEventResponse": {
+        "description": "A carrier event that could not be processed",
+        "properties": {
+          "errorCategory": {
+            "enum": [
+              "MALFORMED_PAYLOAD",
+              "VALIDATION",
+              "UNKNOWN_EVENT_TYPE",
+              "CARRIER_MISMATCH",
+              "UNSUPPORTED_CARRIER",
+              "SHIPMENT_NOT_FOUND",
+              "CONCURRENCY_CONFLICT",
+              "INFRASTRUCTURE",
+              "UNKNOWN"
+            ],
+            "type": "string"
+          },
+          "errorMessage": {
+            "description": "Exception message, truncated. No stack trace.",
+            "type": "string"
+          },
+          "errorType": {
+            "description": "Exception class name",
+            "example": "ca.vm.parcelflow.tracking.InvalidCarrierEventException",
+            "type": "string"
+          },
+          "eventId": {
+            "description": "The carrier's event id, absent when the payload could not be parsed",
+            "format": "uuid",
+            "type": "string"
+          },
+          "failedEventId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "firstFailedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "lastFailedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "originalOffset": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "originalPartition": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "originalTopic": {
+            "type": "string"
+          },
+          "retryCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "retryableAutomatically": {
+            "description": "Whether the automatic retry policy considers this worth re-delivering",
+            "type": "boolean"
+          },
+          "retryableManually": {
+            "description": "Whether POST .../retry will accept this event",
+            "type": "boolean"
+          },
+          "shipmentId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "FAILED",
+              "RETRYING",
+              "RESOLVED"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "FailedEventRetryResponse": {
+        "description": "Result of reprocessing a failed event",
+        "properties": {
+          "detail": {
+            "description": "Human-readable summary of the outcome",
+            "type": "string"
+          },
+          "duplicate": {
+            "description": "True when the event turned out to be already stored — still a success",
+            "type": "boolean"
+          },
+          "failedEventId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "processingStatus": {
+            "description": "How the event was recorded, when the retry succeeded",
+            "enum": [
+              "APPLIED",
+              "SUPERSEDED"
+            ],
+            "type": "string"
+          },
+          "shipmentStatus": {
+            "description": "The shipment's status after reprocessing, when the retry succeeded",
+            "enum": [
+              "LABEL_CREATED",
+              "PICKED_UP",
+              "IN_TRANSIT",
+              "ARRIVED_AT_FACILITY",
+              "OUT_FOR_DELIVERY",
+              "DELAYED",
+              "DELIVERY_ATTEMPTED",
+              "DELIVERED"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "FAILED",
+              "RETRYING",
+              "RESOLVED"
+            ],
+            "type": "string"
+          },
+          "succeeded": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "NotificationResponse": {
+        "description": "A notification record generated for a delivery milestone. Nothing is sent.",
+        "properties": {
+          "channel": {
+            "enum": [
+              "EMAIL"
+            ],
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "notificationId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "notificationType": {
+            "enum": [
+              "PICKED_UP",
+              "OUT_FOR_DELIVERY",
+              "DELAYED",
+              "DELIVERY_ATTEMPTED",
+              "DELIVERED"
+            ],
+            "type": "string"
+          },
+          "sourceEventId": {
+            "description": "The tracking event that caused this notification",
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PageResponseFailedEventResponse": {
+        "description": "A page of results",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/FailedEventResponse"
+            },
+            "type": "array"
+          },
+          "hasNext": {
+            "type": "boolean"
+          },
+          "page": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "totalElements": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalPages": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "PageResponseNotificationResponse": {
+        "description": "A page of results",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationResponse"
+            },
+            "type": "array"
+          },
+          "hasNext": {
+            "type": "boolean"
+          },
+          "page": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "totalElements": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalPages": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "PageResponseShipmentResponse": {
+        "description": "A page of results",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/ShipmentResponse"
+            },
+            "type": "array"
+          },
+          "hasNext": {
+            "type": "boolean"
+          },
+          "page": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "totalElements": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalPages": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "PageResponseTrackingEventResponse": {
+        "description": "A page of results",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/TrackingEventResponse"
+            },
+            "type": "array"
+          },
+          "hasNext": {
+            "type": "boolean"
+          },
+          "page": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "totalElements": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalPages": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RegisterShipmentRequest": {
+        "description": "Registers a parcel for tracking",
+        "properties": {
+          "carrierCode": {
+            "enum": [
+              "SWIFTPOST",
+              "NORDEX",
+              "PACIFICA",
+              "METROLINK"
+            ],
+            "type": "string"
+          },
+          "customerId": {
+            "description": "Opaque retailer-side customer reference. Never logged.",
+            "example": "cust-9f13",
+            "maxLength": 64,
+            "minLength": 0,
+            "type": "string"
+          },
+          "estimatedDeliveryDate": {
+            "example": "2026-08-12",
+            "format": "date",
+            "type": "string"
+          },
+          "retailerId": {
+            "example": "retailer-42",
+            "maxLength": 64,
+            "minLength": 0,
+            "type": "string"
+          },
+          "trackingNumber": {
+            "example": "SP100000000042",
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          }
+        },
+        "required": [
+          "carrierCode",
+          "customerId",
+          "retailerId",
+          "trackingNumber"
+        ],
+        "type": "object"
+      },
+      "ShipmentResponse": {
+        "description": "Current tracking state of a shipment",
+        "properties": {
+          "carrierCode": {
+            "enum": [
+              "SWIFTPOST",
+              "NORDEX",
+              "PACIFICA",
+              "METROLINK"
+            ],
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "currentStatus": {
+            "enum": [
+              "LABEL_CREATED",
+              "PICKED_UP",
+              "IN_TRANSIT",
+              "ARRIVED_AT_FACILITY",
+              "OUT_FOR_DELIVERY",
+              "DELAYED",
+              "DELIVERY_ATTEMPTED",
+              "DELIVERED"
+            ],
+            "type": "string"
+          },
+          "estimatedDeliveryDate": {
+            "format": "date",
+            "type": "string"
+          },
+          "lastEventTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "retailerId": {
+            "type": "string"
+          },
+          "shipmentId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trackingNumber": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "TrackingEventResponse": {
+        "description": "A single carrier scan in a parcel's tracking history",
+        "properties": {
+          "carrierCode": {
+            "enum": [
+              "SWIFTPOST",
+              "NORDEX",
+              "PACIFICA",
+              "METROLINK"
+            ],
+            "type": "string"
+          },
+          "carrierEventType": {
+            "description": "The carrier's own event code, as received",
+            "example": "SP_OFD",
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "eventId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "eventTime": {
+            "description": "When the carrier observed the event (UTC)",
+            "format": "date-time",
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "normalizedEventType": {
+            "description": "ParcelFlow's normalized reading of the event",
+            "enum": [
+              "LABEL_CREATED",
+              "PICKED_UP",
+              "IN_TRANSIT",
+              "ARRIVED_AT_FACILITY",
+              "OUT_FOR_DELIVERY",
+              "DELAYED",
+              "DELIVERY_ATTEMPTED",
+              "DELIVERED"
+            ],
+            "example": "OUT_FOR_DELIVERY",
+            "type": "string"
+          },
+          "processingStatus": {
+            "description": "Whether this event advanced the shipment status or was superseded",
+            "enum": [
+              "APPLIED",
+              "SUPERSEDED"
+            ],
+            "type": "string"
+          },
+          "receivedAt": {
+            "description": "When ParcelFlow ingested the event (UTC)",
+            "format": "date-time",
+            "type": "string"
+          },
+          "sequenceNumber": {
+            "description": "The carrier's per-shipment ordering counter",
+            "example": 5,
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Shipment tracking and carrier event processing.\n\nParcelFlow is an independent portfolio and training project. It is not affiliated with or based on proprietary systems from any delivery carriers or ecommerce retailers. Carrier codes are fictional.",
+    "license": {
+      "name": "MIT"
+    },
+    "title": "ParcelFlow Tracking Service API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/admin/failed-events": {
+      "get": {
+        "description": "Responses carry the exception type and message but never a stack trace or the original payload.",
+        "operationId": "listFailedEvents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "FAILED",
+                "RETRYING",
+                "RESOLVED"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseFailedEventResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "List failed events, most recent failure first",
+        "tags": [
+          "Admin: failed events"
+        ]
+      }
+    },
+    "/api/admin/failed-events/{failedEventId}": {
+      "get": {
+        "operationId": "getFailedEvent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "failedEventId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailedEventResponse"
+                }
+              }
+            },
+            "description": "No such failed event"
+          }
+        },
+        "summary": "Get one failed event",
+        "tags": [
+          "Admin: failed events"
+        ]
+      }
+    },
+    "/api/admin/failed-events/{failedEventId}/retry": {
+      "post": {
+        "description": "Runs the event through the normal processing pipeline in-process and reports the real outcome, rather than republishing to Kafka and answering \"accepted\".\n\nRejected with 409 when the failure category can never succeed on retry (a malformed payload, a missing field), and when another retry already holds the record. Reprocessing is idempotent: an event that did eventually get stored comes back as a duplicate, not an error.",
+        "operationId": "retryFailedEvent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "failedEventId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailedEventRetryResponse"
+                }
+              }
+            },
+            "description": "Retry attempted; body reports the outcome"
+          },
+          "404": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailedEventRetryResponse"
+                }
+              }
+            },
+            "description": "No such failed event"
+          },
+          "409": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailedEventRetryResponse"
+                }
+              }
+            },
+            "description": "Not retryable, or a retry is already in progress"
+          }
+        },
+        "summary": "Reprocess a failed event",
+        "tags": [
+          "Admin: failed events"
+        ]
+      }
+    },
+    "/api/retailers/{retailerId}/shipments": {
+      "get": {
+        "operationId": "listRetailerShipments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "retailerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by current status",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "LABEL_CREATED",
+                "PICKED_UP",
+                "IN_TRANSIT",
+                "ARRIVED_AT_FACILITY",
+                "OUT_FOR_DELIVERY",
+                "DELAYED",
+                "DELIVERY_ATTEMPTED",
+                "DELIVERED"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseShipmentResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "List a retailer's shipments, newest first",
+        "tags": [
+          "Retailers"
+        ]
+      }
+    },
+    "/api/shipments": {
+      "post": {
+        "operationId": "registerShipment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterShipmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentResponse"
+                }
+              }
+            },
+            "description": "Shipment registered"
+          },
+          "400": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentResponse"
+                }
+              }
+            },
+            "description": "Validation failed"
+          },
+          "409": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentResponse"
+                }
+              }
+            },
+            "description": "Tracking number already registered for this carrier"
+          }
+        },
+        "summary": "Register a shipment for tracking",
+        "tags": [
+          "Shipments"
+        ]
+      }
+    },
+    "/api/shipments/{shipmentId}": {
+      "get": {
+        "description": "Served from a Redis cache that is evicted whenever an event advances the shipment, and expires on a TTL as a backstop. PostgreSQL remains the source of truth: if Redis is unavailable the response is identical, just slower.",
+        "operationId": "getShipment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipmentId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentResponse"
+                }
+              }
+            },
+            "description": "Current shipment state"
+          },
+          "404": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentResponse"
+                }
+              }
+            },
+            "description": "No such shipment"
+          }
+        },
+        "summary": "Get the current status of a shipment",
+        "tags": [
+          "Shipments"
+        ]
+      }
+    },
+    "/api/shipments/{shipmentId}/events": {
+      "get": {
+        "description": "Events are ordered by event time ascending, then by the carrier's sequence number. Superseded events — those that arrived too late to change the current status — are included: they are real observations and belong in the history.",
+        "operationId": "getTrackingHistory",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipmentId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseTrackingEventResponse"
+                }
+              }
+            },
+            "description": "A page of tracking events"
+          },
+          "404": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseTrackingEventResponse"
+                }
+              }
+            },
+            "description": "No such shipment"
+          }
+        },
+        "summary": "Get a parcel's tracking history",
+        "tags": [
+          "Tracking history"
+        ]
+      }
+    },
+    "/api/shipments/{shipmentId}/notifications": {
+      "get": {
+        "description": "Records only — ParcelFlow does not send email or SMS. Ordered oldest first by creation time, tie-broken by notification id so paging is deterministic when several notifications share a timestamp.",
+        "operationId": "getNotifications",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipmentId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseNotificationResponse"
+                }
+              }
+            },
+            "description": "A page of notification records"
+          },
+          "404": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseNotificationResponse"
+                }
+              }
+            },
+            "description": "No such shipment"
+          }
+        },
+        "summary": "List the notification records generated for a parcel",
+        "tags": [
+          "Notifications"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Operational triage of events that could not be processed. Unauthenticated in this portfolio build — secure before any real deployment.",
+      "name": "Admin: failed events"
+    },
+    {
+      "description": "Register parcels and read their current tracking state",
+      "name": "Shipments"
+    },
+    {
+      "description": "Notification records generated for delivery milestones",
+      "name": "Notifications"
+    },
+    {
+      "description": "Carrier scans recorded for a parcel",
+      "name": "Tracking history"
+    },
+    {
+      "description": "Retailer-scoped shipment queries",
+      "name": "Retailers"
+    }
+  ]
+}

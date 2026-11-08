@@ -1,0 +1,138 @@
+<div class="pf-timeline-head">
+  <p class="pf-muted" aria-live="polite" data-testid="timeline-summary">
+    {{ summary().total }} events · {{ summary().applied }} applied ·
+    {{ summary().superseded }} superseded
+  </p>
+  <div class="pf-timeline-controls">
+    <mat-button-toggle-group
+      [value]="order()"
+      (change)="setOrder($event.value)"
+      aria-label="Timeline order"
+      hideSingleSelectionIndicator
+    >
+      <mat-button-toggle value="eventTime">Carrier event time</mat-button-toggle>
+      <mat-button-toggle value="received">Arrival order</mat-button-toggle>
+    </mat-button-toggle-group>
+    <mat-button-toggle-group
+      [value]="view()"
+      (change)="setView($event.value)"
+      aria-label="Timeline detail level"
+      hideSingleSelectionIndicator
+    >
+      <mat-button-toggle value="compact">Compact</mat-button-toggle>
+      <mat-button-toggle value="detailed">Detailed</mat-button-toggle>
+    </mat-button-toggle-group>
+  </div>
+</div>
+
+@if (summary().lastRowDiffers) {
+  <div class="pf-callout pf-callout-info" role="note">
+    <mat-icon aria-hidden="true">info</mat-icon>
+    <div class="pf-callout-body">
+      The last row by event time is not the current status. Status is decided by sequence number
+      first, and <strong>Delivered</strong> is final, so late scans are kept as
+      <em>superseded</em> without changing it.
+    </div>
+  </div>
+}
+
+@if (truncated()) {
+  <p class="pf-muted">Showing the first {{ events().length }} events.</p>
+}
+
+<ol class="pf-timeline" [class.pf-timeline-detailed]="view() === 'detailed'" aria-label="Tracking events">
+  @for (event of ordered(); track event.eventId) {
+    <li
+      class="pf-event"
+      [class.pf-event-superseded]="event.processingStatus === 'SUPERSEDED'"
+      [class.pf-event-source]="event.eventId === statusSource()"
+      [attr.id]="'event-' + event.eventId"
+      data-testid="timeline-event"
+      [attr.data-processing-status]="event.processingStatus"
+      [class.pf-event-highlight]="event.eventId === highlighted()"
+      tabindex="-1"
+    >
+      <div class="pf-event-marker" aria-hidden="true"></div>
+      <div class="pf-event-body">
+        <div class="pf-event-row">
+          <div class="pf-event-tags">
+            <pf-status-chip [status]="event.normalizedEventType" />
+            @if (event.processingStatus === 'APPLIED') {
+              <pf-tag tone="success">Applied</pf-tag>
+            } @else {
+              <pf-tag tone="warning"><span [matTooltip]="supersededExplanation">Superseded</span></pf-tag>
+            }
+            @if (event.eventId === statusSource()) {
+              <pf-tag tone="progress">Current status event</pf-tag>
+            }
+          </div>
+          <div class="pf-event-when">
+            <span class="pf-seq" [attr.aria-label]="'Sequence number ' + event.sequenceNumber">#{{ event.sequenceNumber }}</span>
+            <pf-instant [value]="event.eventTime" format="short" />
+          </div>
+        </div>
+
+        @if (event.description || event.location) {
+          <p class="pf-event-text">
+            {{ event.description }}
+            @if (event.location) {
+              <span class="pf-muted">
+                <mat-icon class="pf-inline-icon" aria-hidden="true">location_on</mat-icon>{{ event.location }}
+              </span>
+            }
+          </p>
+        }
+
+        @if (view() === 'compact') {
+          <button
+            mat-button
+            type="button"
+            class="pf-details-toggle"
+            [attr.aria-expanded]="isOpen(event.eventId)"
+            [attr.aria-controls]="'event-' + event.eventId + '-details'"
+            (click)="toggle(event.eventId)"
+          >
+            <mat-icon aria-hidden="true">{{ isOpen(event.eventId) ? 'expand_less' : 'expand_more' }}</mat-icon>
+            {{ isOpen(event.eventId) ? 'Hide details' : 'Details' }}
+            <span class="pf-visually-hidden"> for event #{{ event.sequenceNumber }}</span>
+          </button>
+        }
+
+        @if (isOpen(event.eventId)) {
+          <dl class="pf-event-meta" [attr.id]="'event-' + event.eventId + '-details'">
+            <div>
+              <dt>Carrier event code</dt>
+              <dd><code>{{ event.carrierEventType }}</code> <span class="pf-muted">({{ event.carrierCode }})</span></dd>
+            </div>
+            <div>
+              <dt>Processing</dt>
+              <dd>
+                @if (event.processingStatus === 'APPLIED') {
+                  Applied — changed the shipment status when it was processed
+                } @else {
+                  Superseded — {{ supersededExplanation }}
+                }
+              </dd>
+            </div>
+            <div>
+              <dt>Event time (carrier)</dt>
+              <dd><pf-instant [value]="event.eventTime" /></dd>
+            </div>
+            <div>
+              <dt>Received by ParcelFlow</dt>
+              <dd><pf-instant [value]="event.receivedAt" /></dd>
+            </div>
+            <div>
+              <dt>Correlation ID</dt>
+              <dd><code class="pf-break">{{ event.correlationId }}</code></dd>
+            </div>
+            <div>
+              <dt>Event ID</dt>
+              <dd><code class="pf-break">{{ event.eventId }}</code></dd>
+            </div>
+          </dl>
+        }
+      </div>
+    </li>
+  }
+</ol>

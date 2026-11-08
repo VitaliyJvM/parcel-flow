@@ -148,8 +148,12 @@ docker compose logs -f tracking-service
 docker compose down        # add -v to drop the database and broker volumes
 ```
 
+Every port is published on **127.0.0.1 only**: nothing in this stack has authentication, so none of
+it should be reachable from the network your laptop is on.
+
 | Service | URL |
 |---|---|
+| **Web UI (Angular)** | **http://localhost:8081** — nginx serving the UI and proxying `/api/` |
 | API | http://localhost:8080 |
 | Swagger UI | http://localhost:8080/swagger-ui.html |
 | OpenAPI JSON | http://localhost:8080/v3/api-docs |
@@ -167,6 +171,27 @@ docker compose down        # add -v to drop the database and broker volumes
 `carrier-simulator` sits behind a Compose profile so `up` does not start it — it is a one-shot CLI.
 Because of that, `up --build` does **not** rebuild it; run `docker compose build carrier-simulator`
 after changing it. See the demo below.
+
+### The web UI
+
+An Angular 22 console in [`frontend/`](frontend/README.md): register shipments, watch them move
+as carrier events arrive (polling, including late SUPERSEDED scans that do not change the shipment
+version), read tracking history and notification records, triage and retry failed events, and
+generate the exact `docker compose run carrier-simulator ...` command for a shipment.
+
+```bash
+docker compose up -d --build              # includes the `frontend` service
+open http://localhost:8081
+
+# or, for UI development with live reload (backend still in Compose):
+cd frontend && nvm use && npm ci && npm start   # http://localhost:4200, proxies /api to :8080
+```
+
+It is built with npm, independently of Gradle. It is a **local, unauthenticated demo**: hiding a
+button in the UI is not access control, and the API — including `/api/admin/**` — stays open to
+anyone who can reach it. See
+[docs/analysis/angular-frontend-implementation.md](docs/analysis/angular-frontend-implementation.md)
+for the architecture, test results and what must change before any public deployment.
 
 ### Locally against containerized infrastructure
 
@@ -194,6 +219,12 @@ deployment injects them from its secret store. Without them the connection fails
 ./scripts/run-sonar.sh                    # SonarQube Cloud; needs SONAR_* in .env
 
 ./gradlew :tracking-service:test --tests '*IdempotencyAndOrdering*'   # one slice
+
+cd frontend
+npm run lint                              # ESLint (angular-eslint) + E2E typecheck
+npm test                                  # Vitest unit/component tests
+npm run build                             # production build
+npm run e2e                               # Playwright against the running Compose stack
 ```
 
 SonarQube Cloud analysis reads its configuration from the same git-ignored `.env` as everything
@@ -514,7 +545,10 @@ Known limitations, stated plainly:
   Processing is idempotent enough for a rebalance to be safe, but that is argued rather than
   demonstrated — there is no multi-instance rebalance test.
 - **`/api/admin/**` is unauthenticated.** Out of MVP scope. It exposes cross-retailer failure detail
-  and can trigger reprocessing.
+  and can trigger reprocessing. The web UI shows these screens with a warning; it does not and
+  cannot protect them.
+- **No retailer isolation.** Any caller can list any retailer's shipments by changing the path; the
+  UI's retailer selector is a view filter.
 - **The event contract is declared twice**, once per module, deliberately — see
   [docs/event-processing.md](docs/event-processing.md#the-contract-is-not-a-shared-class). The two
   copies are kept in step by hand; a schema registry is the real fix.
@@ -540,7 +574,7 @@ Known limitations, stated plainly:
 
 Candidate next steps: multiple consumer instances with a rebalance test, a schema registry, an OTLP
 exporter and a trace backend, bulk DLT replay, a notification dispatcher, extracting `notification`
-into its own service, and a minimal React tracking page.
+into its own service, and authentication with retailer scoping in front of the API and the web UI.
 
 ---
 
@@ -550,8 +584,9 @@ into its own service, and a minimal React tracking page.
 parcel-flow/
 ├── build.gradle                 # shared config, quality plugins
 ├── settings.gradle
-├── docker-compose.yml           # postgres, redpanda, redis, service, prometheus, grafana, k6
-├── .github/workflows/ci.yml     # compile, style, tests, image, advisory scans
+├── docker-compose.yml           # postgres, redpanda, redis, service, frontend, prometheus, grafana, k6
+├── .github/workflows/ci.yml     # compile, style, tests, images, frontend, e2e, advisory scans
+├── frontend/                    # Angular 22 web UI (npm, not Gradle), nginx image, Playwright e2e
 ├── config/
 │   ├── checkstyle/              # ruleset and its documented suppressions
 │   └── owasp/                   # dependency-check suppressions (empty, and says why)
