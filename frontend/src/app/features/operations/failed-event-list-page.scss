@@ -1,0 +1,13 @@
+// The error message gets the spare width; everything else stays compact.
+.pf-error-cell {
+  width: 45%;
+  min-width: 240px;
+}
+
+td.mat-mdc-cell,
+th.mat-mdc-header-cell {
+  padding-right: 16px;
+  vertical-align: top;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}

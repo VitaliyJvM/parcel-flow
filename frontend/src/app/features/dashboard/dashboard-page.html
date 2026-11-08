@@ -1,0 +1,179 @@
+<header class="pf-page-header">
+  <div>
+    <h1 class="pf-title">Overview</h1>
+    @if (retailer.retailerId(); as retailerId) {
+      <p class="pf-subtitle">Retailer <strong>{{ retailerId }}</strong> · live from the API</p>
+    }
+  </div>
+  <div class="pf-actions">
+    <button mat-stroked-button type="button" (click)="refresh()">
+      <mat-icon aria-hidden="true">refresh</mat-icon> Refresh
+    </button>
+    <a mat-flat-button routerLink="/shipments/new"><mat-icon aria-hidden="true">add</mat-icon> Register shipment</a>
+  </div>
+</header>
+
+@if (!retailer.retailerId()) {
+  <pf-retailer-required />
+} @else {
+  <section class="pf-card pf-status-card" aria-labelledby="status-heading">
+    <div class="pf-card-header">
+      <h2 id="status-heading">
+        Shipments by current status
+        <button
+          mat-icon-button
+          type="button"
+          class="pf-info-button"
+          [matTooltip]="countsNote"
+          aria-label="How these counts are computed"
+        >
+          <mat-icon aria-hidden="true">info</mat-icon>
+        </button>
+      </h2>
+    </div>
+
+    @if (statusCounts.value(); as counts) {
+      <div class="pf-status-layout">
+        <!-- The total comes from the "recent shipments" request, independently of the eight
+             status counts: its failure marks only this tile (and the Recent card). -->
+        <a
+          class="pf-tile pf-tile-total"
+          [class.pf-tile-error]="!!recentError()"
+          routerLink="/shipments"
+          [attr.aria-label]="'All shipments: ' + totalText()"
+          data-testid="total-tile"
+        >
+          <span class="pf-tile-value">{{ totalText() }}</span>
+          <span class="pf-tile-label">{{ recentError() ? 'All shipments · unavailable' : 'All shipments' }}</span>
+        </a>
+        <div class="pf-tiles">
+          @for (status of statuses; track status) {
+            <a
+              class="pf-tile"
+              [class.pf-tile-zero]="isZero(counts[status])"
+              [class.pf-tile-error]="counts[status].state === 'error'"
+              routerLink="/shipments"
+              [queryParams]="{ status }"
+              [attr.aria-label]="statusMeta[status].label + ': ' + count(counts[status])"
+            >
+              <span class="pf-tile-value">{{ count(counts[status]) }}</span>
+              <span class="pf-tile-label">
+                <span class="pf-swatch" [attr.data-status]="status" aria-hidden="true"></span>
+                {{ statusMeta[status].label }}
+              </span>
+            </a>
+          }
+        </div>
+      </div>
+
+      @if (breakdown().length > 0) {
+        <div class="pf-distribution">
+          <div class="pf-bar" role="img" [attr.aria-label]="'Status distribution: ' + breakdownLabel()">
+            @for (b of breakdown(); track b.status) {
+              <span
+                class="pf-bar-seg"
+                [attr.data-status]="b.status"
+                [style.flex-grow]="b.share"
+                [matTooltip]="statusMeta[b.status].label + ': ' + b.count + ' (' + b.percent + '%)'"
+              ></span>
+            }
+          </div>
+          <ul class="pf-legend" aria-label="Status distribution legend">
+            @for (b of breakdown(); track b.status) {
+              <li>
+                <span class="pf-swatch" [attr.data-status]="b.status" aria-hidden="true"></span>
+                {{ statusMeta[b.status].label }}
+                <span class="pf-muted">{{ b.count }} · {{ b.percent }}%</span>
+              </li>
+            }
+          </ul>
+        </div>
+      }
+      @if (partialFailure()) {
+        <p class="pf-muted pf-note" role="status">
+          Some counts could not be loaded (shown as —). The rest are current.
+          <button mat-button type="button" (click)="refresh()">Retry</button>
+        </p>
+      }
+    } @else if (statusCounts.isLoading()) {
+      <mat-progress-bar mode="indeterminate" aria-label="Loading status counts" />
+    }
+  </section>
+
+  <div class="pf-bottom-row">
+    <section class="pf-card" aria-labelledby="recent-heading">
+      <div class="pf-card-header">
+        <h2 id="recent-heading">Recently registered</h2>
+        <a mat-button routerLink="/shipments">All shipments</a>
+      </div>
+      @if (recent.isLoading()) {
+        <mat-progress-bar mode="indeterminate" aria-label="Loading recent shipments" />
+      }
+      @if (recentError(); as e) {
+        <pf-error-panel [error]="e" context="Could not load shipments" [retryable]="true" (retry)="recent.reload()" />
+      } @else if (recent.value(); as page) {
+        @if (page.content.length === 0) {
+          <p class="pf-muted">No shipments yet for this retailer.</p>
+        } @else {
+          <div class="pf-table-wrap">
+            <table class="pf-simple-table" aria-labelledby="recent-heading">
+              <thead>
+                <tr>
+                  <th scope="col">Tracking number</th>
+                  <th scope="col">Carrier</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Registered</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (s of page.content; track s.shipmentId) {
+                  <tr>
+                    <td><a [routerLink]="['/shipments', s.shipmentId]" class="pf-mono pf-nowrap">{{ s.trackingNumber }}</a></td>
+                    <td>{{ carrierMeta[s.carrierCode].label }}</td>
+                    <td><pf-status-chip [status]="s.currentStatus" /></td>
+                    <td><pf-instant [value]="s.createdAt" format="short" /></td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      }
+    </section>
+
+    <section class="pf-card" aria-labelledby="failed-heading">
+      <div class="pf-card-header">
+        <h2 id="failed-heading">
+          Failed events
+          <button
+            mat-icon-button
+            type="button"
+            class="pf-info-button"
+            [matTooltip]="failedNote"
+            aria-label="About these counts"
+          >
+            <mat-icon aria-hidden="true">info</mat-icon>
+          </button>
+        </h2>
+        <span class="pf-muted pf-small">All retailers</span>
+      </div>
+      @if (failedCounts.value(); as counts) {
+        <ul class="pf-failed-list">
+          @for (s of failedStatuses; track s) {
+            <li>
+              <a
+                routerLink="/operations/failed-events"
+                [queryParams]="{ status: s }"
+                [class.pf-count-zero]="isZero(counts[s])"
+                [class.pf-count-error]="counts[s].state === 'error'"
+              >
+                <span>{{ failedMeta[s].label }}</span>
+                <span class="pf-failed-count">{{ count(counts[s]) }}</span>
+              </a>
+            </li>
+          }
+        </ul>
+      }
+    </section>
+  </div>
+}

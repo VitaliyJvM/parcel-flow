@@ -1,0 +1,42 @@
+@use '@angular/material' as mat;
+
+.pf-list-actions {
+  flex: 0 1 auto;
+}
+
+.pf-open-by-id {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  // Compact field: same component, tighter density, so it sits in the header row.
+  @include mat.form-field-density(-4);
+
+  mat-form-field {
+    width: 340px;
+  }
+
+  @media (max-width: 599.98px) {
+    flex: 1 1 100%;
+
+    mat-form-field {
+      flex: 1 1 auto;
+      width: auto;
+    }
+  }
+}
+
+.pf-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pf-status-filter {
+  width: min(100%, 260px);
+}
+
+td.mat-mdc-cell,
+th.mat-mdc-header-cell {
+  padding-right: 16px;
+}

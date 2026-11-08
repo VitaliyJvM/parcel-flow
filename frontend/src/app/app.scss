@@ -1,0 +1,117 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.pf-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  gap: 8px;
+  background: var(--mat-sys-surface-container);
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+}
+
+.pf-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+  font: var(--mat-sys-title-large);
+}
+
+.pf-spacer {
+  flex: 1 1 auto;
+}
+
+.pf-retailer-caption {
+  margin-right: 6px;
+  padding-right: 6px;
+  border-right: 1px solid var(--mat-sys-outline-variant);
+  font: var(--mat-sys-label-small);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.pf-retailer-label {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font: var(--mat-sys-body-small);
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+
+  mat-icon {
+    flex: none;
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+  }
+
+  a {
+    color: inherit;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+}
+
+.pf-container {
+  flex: 1 1 auto;
+}
+
+.pf-sidenav {
+  width: 240px;
+  border-right: 1px solid var(--mat-sys-outline-variant);
+}
+
+.pf-main {
+  box-sizing: border-box;
+  // Wide enough for an operations dashboard on large screens, capped so line lengths and card
+  // proportions stay readable on ultra-wide monitors.
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 32px 32px;
+  outline: none;
+
+  @media (max-width: 1279.98px) {
+    padding: 24px;
+  }
+
+  @media (max-width: 599.98px) {
+    padding: 16px;
+  }
+}
+
+.pf-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 10;
+  padding: 8px 16px;
+  background: var(--mat-sys-primary);
+  color: var(--mat-sys-on-primary);
+
+  &:focus {
+    left: 8px;
+  }
+}
+
+// Phone width: the retailer button needs the room more than the wordmark and captions do.
+@media (max-width: 599.98px) {
+  .pf-brand span,
+  .pf-retailer-caption,
+  .pf-banner-extra {
+    display: none;
+  }
+}

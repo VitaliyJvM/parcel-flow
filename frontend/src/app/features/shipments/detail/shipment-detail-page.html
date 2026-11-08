@@ -1,0 +1,220 @@
+<nav class="pf-crumbs" aria-label="Breadcrumb">
+  <a routerLink="/shipments">Shipments</a>
+  <span aria-hidden="true">/</span>
+  <span aria-current="page" class="pf-mono">{{ shipment()?.trackingNumber ?? shipmentId() }}</span>
+</nav>
+
+@if (live.notFound()) {
+  <div class="pf-empty">
+    <mat-icon aria-hidden="true">search_off</mat-icon>
+    <h1 class="pf-title">Shipment not found</h1>
+    <p>
+      No shipment has ID <code>{{ shipmentId() }}</code>.
+    </p>
+    @if (live.shipmentError(); as e) {
+      @if (e.correlationId) {
+        <p class="pf-muted">Correlation ID <code>{{ e.correlationId }}</code></p>
+      }
+    }
+    <a mat-flat-button routerLink="/shipments">Back to shipments</a>
+  </div>
+} @else {
+  <header class="pf-page-header">
+    <div>
+      <h1 class="pf-title">
+        Shipment <span class="pf-mono">{{ shipment()?.trackingNumber ?? '…' }}</span>
+      </h1>
+      <p class="pf-muted pf-live" aria-live="polite">
+        <span class="pf-live-dot" [class.pf-live-on]="live.mode() === 'fast' || live.mode() === 'slow'" aria-hidden="true"></span>
+        <span data-testid="live-mode">{{ liveLabel() }}</span>
+        @if (lastChecked(); as checked) {
+          <span> · last checked {{ checked }}</span>
+        }
+      </p>
+    </div>
+    <div class="pf-actions">
+      @if (canResume()) {
+        <button mat-stroked-button type="button" (click)="live.resume()">
+          <mat-icon aria-hidden="true">play_arrow</mat-icon>
+          Resume live updates
+        </button>
+      }
+      <button mat-flat-button type="button" (click)="live.refresh()" [disabled]="live.busy()">
+        <mat-icon aria-hidden="true">refresh</mat-icon>
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  @if (live.busy() && !shipment()) {
+    <mat-progress-bar mode="indeterminate" aria-label="Loading shipment" />
+  }
+
+  @if (justRegistered && shipment()?.currentStatus === 'LABEL_CREATED') {
+    <div class="pf-callout pf-callout-success" role="status">
+      <mat-icon aria-hidden="true">check_circle</mat-icon>
+      <div class="pf-callout-body">
+        <strong>Shipment registered.</strong> It will move once carrier events arrive. Use the
+        <em>Simulate</em> tab to generate them.
+      </div>
+    </div>
+  }
+
+  @if (live.shipmentError(); as e) {
+    <pf-error-panel [error]="e" context="Could not refresh the shipment" [retryable]="true" (retry)="live.refresh()" />
+  }
+
+  @if (shipment(); as s) {
+    <section class="pf-card pf-summary" aria-labelledby="summary-heading">
+      <h2 id="summary-heading" class="pf-visually-hidden">Summary</h2>
+      <div class="pf-status-block">
+        <p class="pf-label">Current status</p>
+        <div data-testid="current-status" [attr.data-status]="s.currentStatus">
+          <pf-status-chip [status]="s.currentStatus" />
+        </div>
+        <p class="pf-muted pf-small">From the shipment record: sequence-ordered, and Delivered is final.</p>
+      </div>
+      <dl class="pf-facts pf-primary-facts">
+        <div>
+          <dt>Tracking number</dt>
+          <dd class="pf-with-action">
+            <code>{{ s.trackingNumber }}</code>
+            <pf-copy-button [value]="s.trackingNumber" label="Copy tracking number" />
+          </dd>
+        </div>
+        <div>
+          <dt>Carrier</dt>
+          <dd>
+            {{ carrierMeta[s.carrierCode].label }}
+            @if (!operational()) {
+              <span class="pf-warning-text"> · events not processed (no normalizer)</span>
+            }
+          </dd>
+        </div>
+        <div>
+          <dt>Estimated delivery</dt>
+          <dd><pf-local-date [value]="s.estimatedDeliveryDate" /></dd>
+        </div>
+        <div>
+          <dt>Last carrier event</dt>
+          <dd><pf-instant [value]="s.lastEventTime" placeholder="No events yet" /></dd>
+        </div>
+        <div>
+          <dt>Retailer</dt>
+          <dd>{{ s.retailerId }}</dd>
+        </div>
+      </dl>
+
+      <div class="pf-meta" role="group" aria-labelledby="meta-heading">
+        <h3 id="meta-heading" class="pf-meta-heading">Record metadata</h3>
+        <dl class="pf-facts pf-meta-facts">
+          <div class="pf-meta-id">
+            <dt>Shipment ID</dt>
+            <dd class="pf-with-action">
+              <code class="pf-break">{{ s.shipmentId }}</code>
+              <pf-copy-button [value]="s.shipmentId" label="Copy shipment ID" />
+            </dd>
+          </div>
+          <div>
+            <dt>Registered</dt>
+            <dd><pf-instant [value]="s.createdAt" /></dd>
+          </div>
+          <div>
+            <dt>Updated</dt>
+            <dd><pf-instant [value]="s.updatedAt" /></dd>
+          </div>
+          <div>
+            <dt>
+              Version
+              <button
+                mat-icon-button
+                type="button"
+                class="pf-info-button"
+                matTooltip="Increments when the status changes. Superseded events are stored without changing it."
+                aria-label="About the version number"
+              >
+                <mat-icon aria-hidden="true">info</mat-icon>
+              </button>
+            </dt>
+            <dd><span data-testid="shipment-version">{{ s.version }}</span></dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <mat-tab-group
+      class="pf-card pf-tabs"
+      mat-stretch-tabs="false"
+      animationDuration="0ms"
+      [selectedIndex]="selectedTab()"
+      (selectedIndexChange)="selectedTab.set($event)"
+    >
+      <mat-tab>
+        <ng-template mat-tab-label>
+          Tracking history
+          @if (eventCount() !== null) {
+            <span class="pf-count">{{ eventCount() }}</span>
+          }
+        </ng-template>
+        <div class="pf-tab-body">
+          @if (live.historyError(); as e) {
+            <pf-error-panel [error]="e" context="Could not load tracking history" [retryable]="true" (retry)="live.refresh()" />
+          }
+          @if (live.events(); as events) {
+            @if (events.items.length === 0) {
+              <div class="pf-empty">
+                <mat-icon aria-hidden="true">timeline</mat-icon>
+                <h2>No carrier events yet</h2>
+                <p>Events appear here as the carrier publishes them. Try the Simulate tab.</p>
+              </div>
+            } @else {
+              <pf-tracking-timeline
+                [events]="events.items"
+                [currentStatus]="s.currentStatus"
+                [truncated]="events.truncated"
+                [focusEventId]="focusEventId()"
+                (eventFocused)="focusEventId.set(null)"
+              />
+            }
+          } @else if (!live.historyError()) {
+            <mat-progress-bar mode="indeterminate" aria-label="Loading tracking history" />
+          }
+        </div>
+      </mat-tab>
+
+      <mat-tab>
+        <ng-template mat-tab-label>
+          Notifications
+          @if (notificationCount() !== null) {
+            <span class="pf-count">{{ notificationCount() }}</span>
+          }
+        </ng-template>
+        <div class="pf-tab-body">
+          @if (live.notificationsError(); as e) {
+            <pf-error-panel [error]="e" context="Could not load notifications" [retryable]="true" (retry)="live.refresh()" />
+          }
+          @if (live.notifications(); as notifications) {
+            <pf-notification-list
+              [notifications]="notifications.items"
+              [events]="live.events()?.items ?? []"
+              (showEvent)="showEvent($event)"
+            />
+          } @else if (!live.notificationsError()) {
+            <mat-progress-bar mode="indeterminate" aria-label="Loading notifications" />
+          }
+        </div>
+      </mat-tab>
+
+      <mat-tab label="Simulate">
+        <div class="pf-tab-body">
+          <pf-simulation-panel
+            [shipmentId]="s.shipmentId"
+            [trackingNumber]="s.trackingNumber"
+            [carrier]="s.carrierCode"
+            [locked]="true"
+          />
+        </div>
+      </mat-tab>
+    </mat-tab-group>
+  }
+}

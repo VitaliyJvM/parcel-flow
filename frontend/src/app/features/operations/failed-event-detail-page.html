@@ -1,0 +1,155 @@
+<nav class="pf-muted" aria-label="Breadcrumb" style="margin-bottom: 8px">
+  <a routerLink="/operations/failed-events">Failed events</a> / <span class="pf-mono" aria-current="page">{{ failedEventId() }}</span>
+</nav>
+
+@if (event.isLoading() && !event.hasValue()) {
+  <mat-progress-bar mode="indeterminate" aria-label="Loading failed event" />
+}
+
+@if (loadError(); as e) {
+  @if (e.status === 404) {
+    <div class="pf-empty">
+      <mat-icon aria-hidden="true">search_off</mat-icon>
+      <h1 class="pf-title">Failed event not found</h1>
+      <a mat-flat-button routerLink="/operations/failed-events">Back to failed events</a>
+    </div>
+  } @else {
+    <pf-error-panel [error]="e" context="Could not load the failed event" [retryable]="true" (retry)="event.reload()" />
+  }
+} @else if (event.hasValue()) {
+  @let f = event.value();
+  <header class="pf-page-header">
+    <div>
+      <h1 class="pf-title">Failed event — {{ categoryMeta[f.errorCategory].label }}</h1>
+      <p class="pf-subtitle pf-status-line">
+        <pf-tag [tone]="statusMeta[f.status].tone">{{ statusMeta[f.status].label }}</pf-tag>
+        <span>{{ statusMeta[f.status].explanation }}</span>
+      </p>
+    </div>
+    <div class="pf-actions">
+      <button mat-stroked-button type="button" (click)="event.reload()" [disabled]="event.isLoading()">
+        <mat-icon aria-hidden="true">refresh</mat-icon> Reload
+      </button>
+      @if (retryAllowed()) {
+        <button mat-flat-button type="button" (click)="confirmRetry(f)" [disabled]="retrying()">
+          <mat-icon aria-hidden="true">replay</mat-icon> Retry…
+        </button>
+      }
+    </div>
+  </header>
+
+  @if (retrying()) {
+    <mat-progress-bar mode="indeterminate" aria-label="Retrying" />
+  }
+
+  @if (outcome(); as o) {
+    @switch (o.kind) {
+      @case ('succeeded') {
+        <div class="pf-callout pf-callout-success" role="status" data-testid="retry-outcome">
+          <mat-icon aria-hidden="true">check_circle</mat-icon>
+          <div class="pf-callout-body">
+            <strong>Retry succeeded.</strong> {{ o.response.detail }}
+            @if (o.response.shipmentStatus; as st) {
+              <p>Shipment status after reprocessing: {{ shipmentStatusMeta[st].label }}.</p>
+            }
+            @if (o.response.duplicate) {
+              <p>The event had already been stored; nothing changed.</p>
+            }
+          </div>
+        </div>
+      }
+      @case ('failed-again') {
+        <div class="pf-callout pf-callout-warning" role="alert" data-testid="retry-outcome">
+          <mat-icon aria-hidden="true">sync_problem</mat-icon>
+          <div class="pf-callout-body">
+            <strong>Retry ran, but processing failed again.</strong> The request itself succeeded
+            (HTTP 200); the event did not. {{ o.response.detail }}
+          </div>
+        </div>
+      }
+      @case ('rejected') {
+        <div class="pf-callout pf-callout-error" role="alert" data-testid="retry-outcome">
+          <mat-icon aria-hidden="true">block</mat-icon>
+          <div class="pf-callout-body">
+            <strong>{{ o.error.title }} (HTTP {{ o.error.status }})</strong>
+            <p>{{ o.message }}</p>
+            @if (o.error.correlationId) {
+              <p class="pf-correlation">Correlation ID <code>{{ o.error.correlationId }}</code></p>
+            }
+          </div>
+        </div>
+      }
+    }
+  }
+
+  <section class="pf-card">
+    <h2>Diagnosis</h2>
+    <p>{{ categoryMeta[f.errorCategory].explanation }}</p>
+    <dl class="pf-facts">
+      <div><dt>Category</dt><dd><code>{{ f.errorCategory }}</code></dd></div>
+      <div><dt>Automatic retry</dt><dd>{{ f.retryableAutomatically ? 'Yes (transient)' : 'No' }}</dd></div>
+      <div>
+        <dt>Manual retry</dt>
+        <dd>
+          @if (f.retryableManually) {
+            {{ f.status === 'FAILED' ? 'Allowed' : 'Allowed only from FAILED (currently ' + f.status + ')' }}
+          } @else {
+            Not retryable
+          }
+        </dd>
+      </div>
+      <div><dt>Retries so far</dt><dd>{{ f.retryCount }}</dd></div>
+      <div class="pf-span-2"><dt>Exception type</dt><dd><code class="pf-break">{{ f.errorType }}</code></dd></div>
+      <div class="pf-wide"><dt>Message</dt><dd>{{ f.errorMessage ?? '—' }}</dd></div>
+    </dl>
+  </section>
+
+  @if (f.status === 'RETRYING') {
+    <div class="pf-callout pf-callout-warning" role="note">
+      <mat-icon aria-hidden="true">hourglass_top</mat-icon>
+      <div class="pf-callout-body">
+        A retry holds this record. If it stays in RETRYING (for example because the service
+        restarted mid-retry) it cannot be retried again, and the API has no endpoint to release it.
+        That needs a backend change; see the implementation report.
+      </div>
+    </div>
+  }
+
+  <section class="pf-card">
+    <h2>Identifiers</h2>
+    <dl class="pf-facts">
+      <div>
+        <dt>Failed event ID</dt>
+        <dd class="pf-with-action"><code class="pf-break">{{ f.failedEventId }}</code> <pf-copy-button [value]="f.failedEventId" label="Copy failed event ID" /></dd>
+      </div>
+      <div>
+        <dt>Carrier event ID</dt>
+        <dd>
+          @if (f.eventId) {
+            <code class="pf-break">{{ f.eventId }}</code>
+          } @else {
+            <span class="pf-muted">Not available (payload could not be parsed)</span>
+          }
+        </dd>
+      </div>
+      <div>
+        <dt>Shipment</dt>
+        <dd>
+          @if (f.shipmentId) {
+            <a [routerLink]="['/shipments', f.shipmentId]" class="pf-mono">{{ f.shipmentId }}</a>
+          } @else {
+            <span class="pf-muted">Not available</span>
+          }
+        </dd>
+      </div>
+      <div><dt>Kafka topic</dt><dd><code class="pf-break">{{ f.originalTopic }}</code></dd></div>
+      <div><dt>Partition / offset</dt><dd class="pf-mono">{{ f.originalPartition }} / {{ f.originalOffset }}</dd></div>
+      <div><dt>First failed</dt><dd><pf-instant [value]="f.firstFailedAt" /></dd></div>
+      <div><dt>Last failed</dt><dd><pf-instant [value]="f.lastFailedAt" /></dd></div>
+    </dl>
+    <p class="pf-muted">
+      The original payload is stored for reprocessing but deliberately not returned by the API (it
+      may carry a customer reference).
+    </p>
+  </section>
+}

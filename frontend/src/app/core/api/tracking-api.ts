@@ -1,0 +1,119 @@
+import { HttpClient, HttpContext, HttpParams } from '@angular/common/http';
+import { inject, Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { SKIP_RETRY } from '../http/interceptors';
+import {
+  FailedEventResponse,
+  FailedEventRetryResponse,
+  FailedEventStatus,
+  NotificationResponse,
+  Page,
+  PageRequest,
+  RegisterShipmentRequest,
+  ShipmentResponse,
+  ShipmentStatus,
+  TrackingEventResponse,
+} from './models';
+
+/** Options shared by every read; `probe` marks a lightweight polling request that must not retry. */
+export interface ReadOptions {
+  probe?: boolean;
+}
+
+function params(values: Record<string, string | number | null | undefined>): HttpParams {
+  let result = new HttpParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== null && value !== undefined && value !== '') {
+      result = result.set(key, String(value));
+    }
+  }
+  return result;
+}
+
+function context(options?: ReadOptions): HttpContext | undefined {
+  return options?.probe ? new HttpContext().set(SKIP_RETRY, true) : undefined;
+}
+
+/**
+ * Thin typed wrapper over the public shipment, tracking and notification endpoints.
+ *
+ * One method per endpoint, relative same-origin URLs only, no caching and no state: the polling
+ * logic that decides *when* to call these lives in `ShipmentLiveTracker`, and error parsing lives
+ * in the interceptors.
+ */
+@Injectable({ providedIn: 'root' })
+export class ShipmentsApi {
+  private readonly http = inject(HttpClient);
+
+  register(request: RegisterShipmentRequest): Observable<ShipmentResponse> {
+    return this.http.post<ShipmentResponse>('/api/shipments', request);
+  }
+
+  get(shipmentId: string, options?: ReadOptions): Observable<ShipmentResponse> {
+    return this.http.get<ShipmentResponse>(`/api/shipments/${encodeURIComponent(shipmentId)}`, {
+      context: context(options),
+    });
+  }
+
+  listForRetailer(
+    retailerId: string,
+    page: PageRequest,
+    status?: ShipmentStatus | null,
+  ): Observable<Page<ShipmentResponse>> {
+    return this.http.get<Page<ShipmentResponse>>(
+      `/api/retailers/${encodeURIComponent(retailerId)}/shipments`,
+      { params: params({ status, page: page.page, size: page.size }) },
+    );
+  }
+
+  events(
+    shipmentId: string,
+    page: PageRequest,
+    options?: ReadOptions,
+  ): Observable<Page<TrackingEventResponse>> {
+    return this.http.get<Page<TrackingEventResponse>>(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/events`,
+      { params: params({ page: page.page, size: page.size }), context: context(options) },
+    );
+  }
+
+  notifications(
+    shipmentId: string,
+    page: PageRequest,
+    options?: ReadOptions,
+  ): Observable<Page<NotificationResponse>> {
+    return this.http.get<Page<NotificationResponse>>(
+      `/api/shipments/${encodeURIComponent(shipmentId)}/notifications`,
+      { params: params({ page: page.page, size: page.size }), context: context(options) },
+    );
+  }
+}
+
+/** Unauthenticated admin endpoints under `/api/admin/failed-events` (see SECURITY notes). */
+@Injectable({ providedIn: 'root' })
+export class FailedEventsApi {
+  private readonly http = inject(HttpClient);
+
+  list(page: PageRequest, status?: FailedEventStatus | null): Observable<Page<FailedEventResponse>> {
+    return this.http.get<Page<FailedEventResponse>>('/api/admin/failed-events', {
+      params: params({ status, page: page.page, size: page.size }),
+    });
+  }
+
+  get(failedEventId: string): Observable<FailedEventResponse> {
+    return this.http.get<FailedEventResponse>(
+      `/api/admin/failed-events/${encodeURIComponent(failedEventId)}`,
+    );
+  }
+
+  /**
+   * HTTP 200 does not mean the retry worked: inspect `succeeded`. 409 means the event is not
+   * retryable or another retry holds it; both arrive as an `ApiError`.
+   */
+  retry(failedEventId: string): Observable<FailedEventRetryResponse> {
+    return this.http.post<FailedEventRetryResponse>(
+      `/api/admin/failed-events/${encodeURIComponent(failedEventId)}/retry`,
+      null,
+    );
+  }
+}

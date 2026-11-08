@@ -1,0 +1,118 @@
+<header class="pf-page-header">
+  <div>
+    <h1 class="pf-title">Register shipment</h1>
+    <p class="pf-muted">Creates the shipment in <code>LABEL_CREATED</code>. Carrier events then move it along.</p>
+  </div>
+  <a mat-button routerLink="/shipments">Back to shipments</a>
+</header>
+
+<form class="pf-card pf-register" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+  @if (submitting()) {
+    <mat-progress-bar mode="indeterminate" aria-label="Registering shipment" />
+  }
+
+  @if (formError(); as e) {
+    <pf-error-panel [error]="e" context="Registration failed" />
+  }
+
+  @if (duplicate(); as d) {
+    <div class="pf-callout pf-callout-warning" role="alert">
+      <mat-icon aria-hidden="true">content_copy</mat-icon>
+      <div class="pf-callout-body">
+        <strong>Already registered</strong>
+        <p>
+          Tracking number <code>{{ d.trackingNumber }}</code> is already registered for
+          {{ d.carrier }}. A tracking number is unique per carrier, so either use a different
+          number or a different carrier. (The API offers no lookup by tracking number to link to
+          the existing shipment.)
+        </p>
+      </div>
+    </div>
+  }
+
+  <div class="pf-form-grid">
+    <mat-form-field>
+      <mat-label>Retailer ID</mat-label>
+      <input matInput formControlName="retailerId" [maxlength]="limits.retailerId" autocomplete="off" required />
+      <mat-hint align="end">{{ form.controls.retailerId.value.length }}/{{ limits.retailerId }}</mat-hint>
+      @if (form.controls.retailerId.hasError('required') || form.controls.retailerId.hasError('blank')) {
+        <mat-error>Retailer ID is required.</mat-error>
+      } @else if (form.controls.retailerId.hasError('server')) {
+        <mat-error>{{ form.controls.retailerId.getError('server') }}</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field>
+      <mat-label>Customer reference</mat-label>
+      <input matInput formControlName="customerId" [maxlength]="limits.customerId" autocomplete="off" required />
+      <mat-hint>Opaque retailer-side reference. Not shown again: the API never returns it.</mat-hint>
+      @if (form.controls.customerId.hasError('required') || form.controls.customerId.hasError('blank')) {
+        <mat-error>Customer reference is required.</mat-error>
+      } @else if (form.controls.customerId.hasError('server')) {
+        <mat-error>{{ form.controls.customerId.getError('server') }}</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field>
+      <mat-label>Tracking number</mat-label>
+      <input
+        matInput
+        formControlName="trackingNumber"
+        [maxlength]="limits.trackingNumber"
+        autocomplete="off"
+        class="pf-mono"
+        required
+      />
+      <mat-hint align="end">{{ form.controls.trackingNumber.value.length }}/{{ limits.trackingNumber }}</mat-hint>
+      @if (form.controls.trackingNumber.hasError('required') || form.controls.trackingNumber.hasError('blank')) {
+        <mat-error>Tracking number is required.</mat-error>
+      } @else if (form.controls.trackingNumber.hasError('duplicate')) {
+        <mat-error>Already registered for this carrier.</mat-error>
+      } @else if (form.controls.trackingNumber.hasError('server')) {
+        <mat-error>{{ form.controls.trackingNumber.getError('server') }}</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field>
+      <mat-label>Carrier</mat-label>
+      <mat-select formControlName="carrierCode" required>
+        @for (carrier of carriers; track carrier) {
+          <mat-option [value]="carrier" [disabled]="!isOperational(carrier)">
+            {{ carrierMeta[carrier].label }}
+            @if (!isOperational(carrier)) {
+              <span class="pf-muted"> — no event normalizer</span>
+            }
+          </mat-option>
+        }
+      </mat-select>
+      <mat-hint>{{ carrierMeta[form.controls.carrierCode.value].note }}</mat-hint>
+      @if (form.controls.carrierCode.hasError('server')) {
+        <mat-error>{{ form.controls.carrierCode.getError('server') }}</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field>
+      <mat-label>Estimated delivery date (optional)</mat-label>
+      <input matInput type="date" formControlName="estimatedDeliveryDate" />
+      @if (etaInPast()) {
+        <mat-hint>This date is in the past. The API accepts it, but check it is intended.</mat-hint>
+      } @else {
+        <mat-hint>A calendar day, stored without a time zone.</mat-hint>
+      }
+      @if (form.controls.estimatedDeliveryDate.hasError('server')) {
+        <mat-error>{{ form.controls.estimatedDeliveryDate.getError('server') }}</mat-error>
+      }
+    </mat-form-field>
+  </div>
+
+  <p class="pf-muted pf-carrier-note">
+    NORDEX and METROLINK exist in the API and can be registered through it directly, but the
+    tracking service has no normalizer for them yet, so their events are dead-lettered. They are
+    disabled here to avoid creating shipments that can never progress.
+  </p>
+
+  <div class="pf-actions">
+    <button mat-flat-button type="submit" [disabled]="submitting()">Register shipment</button>
+    <a mat-button routerLink="/shipments">Cancel</a>
+  </div>
+</form>

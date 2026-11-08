@@ -8,10 +8,14 @@ name: CI
 #
 #   build          BLOCKING   compile, Checkstyle, unit + integration tests, jar
 #                  ADVISORY   ...plus a SonarQube Cloud step, see below
-#   package        BLOCKING   Docker image build, Compose validation, k6 script parse
+#   package        BLOCKING   Docker image builds (API + web UI), Compose validation, k6 parse
+#   frontend       BLOCKING   Angular lint, unit tests (Vitest), production build
+#   e2e            BLOCKING   OpenAPI snapshot vs live service; Playwright against the real
+#                             Compose stack + carrier simulator
 #   dependencies   ADVISORY   OWASP Dependency-Check; only runs when an NVD_API_KEY secret exists
 #
-# The three jobs are independent and run in parallel; none of them needs another's output.
+# The jobs are independent and run in parallel; none of them needs another's output. The frontend
+# is built by npm only: it is deliberately not part of the Gradle build.
 #
 # Sonar is a step inside `build` rather than a job of its own. As a separate job it had to re-run
 # `test jacocoTestReport` to produce the coverage XML the scanner reads, which meant a second full
@@ -164,6 +168,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build the frontend image
+        # The nginx + Angular image, built from its own context (frontend/).
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          load: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
       - name: Validate the Compose file
         # Catches a malformed override, an undefined volume or a bad profile before someone
         # discovers it while trying to run the demo.
@@ -176,6 +190,117 @@ jobs:
         run: |
           docker run --rm -v "$PWD/performance/k6:/scripts:ro" grafana/k6:0.57.0 \
             inspect /scripts/parcelflow-load-test.js
+
+  frontend:
+    name: Frontend lint, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Contract snapshot is current
+        # The committed TypeScript contracts must be exactly what the committed OpenAPI snapshot
+        # generates. A hand edit, or a refreshed snapshot without regeneration, fails here.
+        run: |
+          npm run api:generate
+          git diff --exit-code -- src/app/core/api/generated
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+  e2e:
+    name: End-to-end (Playwright, real stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Start the stack
+        # The tracking service, its dependencies and the web UI, exactly as a developer runs them.
+        # The simulator image is built up front so the first test does not pay for it.
+        run: |
+          docker compose --profile simulator build tracking-service carrier-simulator frontend
+          docker compose up -d --wait postgres redpanda redis tracking-service frontend
+
+      - name: Install frontend dependencies and browser
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: OpenAPI snapshot matches the running service
+        # The `frontend` job proves the generated TypeScript matches the committed snapshot; this
+        # step proves the snapshot matches what the backend actually serves. Together they catch a
+        # backend contract change that was not carried into the frontend.
+        #
+        # The service is healthy at this point (`up --wait` gates on its readiness probe, which
+        # requires Flyway and the datasource). fetch-openapi.mjs writes canonical, key-sorted JSON,
+        # so only a real contract change produces a diff, never springdoc ordering.
+        working-directory: frontend
+        env:
+          OPENAPI_URL: http://127.0.0.1:8080/v3/api-docs
+        run: |
+          npm run api:fetch
+          if ! git diff --exit-code -- openapi/tracking-service.openapi.json; then
+            echo "::error file=frontend/openapi/tracking-service.openapi.json::The tracking service's OpenAPI document differs from the committed snapshot. Run 'npm run api:fetch && npm run api:generate' in frontend/ against the current backend and commit both files."
+            exit 1
+          fi
+
+      - name: Playwright
+        # Against the nginx container, i.e. the production build and the production proxy rules.
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://127.0.0.1:8081
+        run: npm run e2e
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color tracking-service frontend | tail -n 400
+
+      - name: Upload the Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
 
   dependencies:
     name: Dependency vulnerabilities (advisory)

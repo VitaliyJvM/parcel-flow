@@ -1,0 +1,228 @@
+// One distinct colour per status for the distribution bar, legend and tile swatches. Colour is
+// never the only cue: every swatch sits next to its text label.
+:host {
+  --pf-st-label-created: light-dark(#8a8f98, #a3a9b3);
+  --pf-st-picked-up: light-dark(#5b9bd5, #8ec0ee);
+  --pf-st-in-transit: light-dark(#1f6fc5, #6aa9f0);
+  --pf-st-arrived: light-dark(#13857f, #5cc9c1);
+  --pf-st-out-for-delivery: light-dark(#6a4fc2, #b4a1f2);
+  --pf-st-delayed: light-dark(#c98a00, #f0c050);
+  --pf-st-attempted: light-dark(#c4501b, #f2956a);
+  --pf-st-delivered: light-dark(#1b6b35, #74cc8e);
+}
+
+[data-status='LABEL_CREATED'] { --pf-st: var(--pf-st-label-created); }
+[data-status='PICKED_UP'] { --pf-st: var(--pf-st-picked-up); }
+[data-status='IN_TRANSIT'] { --pf-st: var(--pf-st-in-transit); }
+[data-status='ARRIVED_AT_FACILITY'] { --pf-st: var(--pf-st-arrived); }
+[data-status='OUT_FOR_DELIVERY'] { --pf-st: var(--pf-st-out-for-delivery); }
+[data-status='DELAYED'] { --pf-st: var(--pf-st-delayed); }
+[data-status='DELIVERY_ATTEMPTED'] { --pf-st: var(--pf-st-attempted); }
+[data-status='DELIVERED'] { --pf-st: var(--pf-st-delivered); }
+
+.pf-status-card {
+  container-type: inline-size;
+}
+
+// Total on the left, the eight statuses as a balanced 4 × 2 grid on the right; 2 columns when the
+// card is narrow (tablet portrait, phones).
+.pf-status-layout {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 4fr;
+  gap: 12px;
+
+  @container (max-width: 699.98px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pf-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+
+  @container (max-width: 699.98px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.pf-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--mat-sys-outline-variant);
+  background: var(--mat-sys-surface);
+  color: inherit;
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--mat-sys-surface-container-high);
+  }
+}
+
+.pf-tile-total {
+  justify-content: center;
+  background: var(--mat-sys-primary-container);
+  color: var(--mat-sys-on-primary-container);
+  border-color: transparent;
+
+  .pf-tile-value {
+    font: var(--mat-sys-display-small);
+  }
+}
+
+// Zero counts stay clickable but recede, so the non-zero statuses stand out.
+.pf-tile-zero {
+  background: transparent;
+  border-style: dashed;
+
+  .pf-tile-value {
+    color: var(--mat-sys-on-surface-variant);
+    opacity: 0.7;
+  }
+}
+
+.pf-tile-error .pf-tile-value,
+.pf-count-error .pf-failed-count {
+  color: var(--mat-sys-error);
+}
+
+.pf-tile-value {
+  font: var(--mat-sys-headline-small);
+}
+
+.pf-tile-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: var(--mat-sys-label-medium);
+  overflow-wrap: anywhere;
+}
+
+.pf-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--pf-st, var(--mat-sys-outline));
+}
+
+.pf-distribution {
+  margin-top: 16px;
+}
+
+.pf-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  gap: 2px;
+  background: var(--mat-sys-surface-container-highest);
+}
+
+.pf-bar-seg {
+  flex-basis: 0;
+  min-width: 6px;
+  background: var(--pf-st);
+}
+
+.pf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font: var(--mat-sys-body-small);
+
+  li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+.pf-note {
+  font: var(--mat-sys-body-small);
+  margin: 12px 0 0;
+}
+
+.pf-small {
+  font: var(--mat-sys-body-small);
+}
+
+// Recent shipments get the width; failed-event counts are a narrow side card.
+.pf-bottom-row {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  align-items: start;
+
+  @media (max-width: 1099.98px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pf-simple-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--mat-sys-body-medium);
+
+  th {
+    text-align: left;
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-on-surface-variant);
+    padding: 0 12px 8px 0;
+    border-bottom: 1px solid var(--mat-sys-outline-variant);
+  }
+
+  td {
+    padding: 8px 12px 8px 0;
+    border-bottom: 1px solid var(--mat-sys-outline-variant);
+    vertical-align: middle;
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+}
+
+.pf-failed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  a {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    margin: 0 -12px;
+    border-radius: 8px;
+    color: inherit;
+    text-decoration: none;
+
+    &:hover,
+    &:focus-visible {
+      background: var(--mat-sys-surface-container-high);
+    }
+  }
+
+  li + li {
+    border-top: 1px solid var(--mat-sys-outline-variant);
+  }
+}
+
+.pf-failed-count {
+  font: var(--mat-sys-title-large);
+}
+
+.pf-count-zero .pf-failed-count {
+  color: var(--mat-sys-on-surface-variant);
+  opacity: 0.7;
+}

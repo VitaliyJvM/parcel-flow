@@ -6,3 +6,6 @@ build
 docs
 *.md
 !README.md
+# The Angular app has its own build context (./frontend) and Dockerfile. Excluding it here keeps
+# node_modules out of the context sent for the Java images.
+frontend
