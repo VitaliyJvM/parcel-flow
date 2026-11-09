@@ -372,13 +372,22 @@ class BrowserSessionSecurityIntegrationTest extends KafkaIntegrationTest {
         }
 
         @Test
-        @DisplayName("a session with no recorded login time gets one on first sight: never unbounded")
-        void missingLoginTime() throws Exception {
+        @DisplayName("a session with no lifetime record gets one on first sight: never unbounded")
+        void missingLifetimeRecord() throws Exception {
             MockHttpSession session = session(Duration.ofMinutes(1), Duration.ofMinutes(1));
             session.removeAttribute(SessionLifetimeFilter.AUTHENTICATED_AT);
+            session.removeAttribute(SessionLifetimeFilter.LAST_ACTIVITY_AT);
             Instant before = Instant.now();
             mockMvc.perform(get(LIST).session(session)).andExpect(status().isOk());
             assertThat((Instant) session.getAttribute(SessionLifetimeFilter.AUTHENTICATED_AT)).isAfterOrEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("a session missing only its login time is ended, not restarted: 401")
+        void missingLoginTimeFailsClosed() throws Exception {
+            MockHttpSession session = session(Duration.ofHours(9), Duration.ofMinutes(1));
+            session.removeAttribute(SessionLifetimeFilter.AUTHENTICATED_AT);
+            assertEnded(session);
         }
     }
 

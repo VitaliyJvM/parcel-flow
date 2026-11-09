@@ -71,9 +71,9 @@ public final class IdentityMapper {
 
     private static ParcelFlowRole singleRole(Object rolesClaim) {
         Set<ParcelFlowRole> roles = EnumSet.noneOf(ParcelFlowRole.class);
-        // Keycloak's realm-role mapper also emits default roles (offline_access,
-        // default-roles-<realm>, ...). Those are not this application's business and are ignored;
-        // only exact matches of the application role names count.
+        // Keycloak's realm-role mapper also emits its built-in default roles, such as the offline
+        // access role and the realm's default-roles composite. They are not ParcelFlow roles and are
+        // ignored: only a value that exactly matches an application role name counts.
         for (Object value : asCollection(rolesClaim)) {
             if (value instanceof String role) {
                 ParcelFlowRole.fromClaimValue(role).ifPresent(roles::add);

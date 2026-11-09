@@ -39,7 +39,7 @@ public class CurrentUserProvider {
         }
         try {
             return Optional.of(IdentityMapper.fromClaims(oidcUser.getClaims()));
-        } catch (IdentityMappingException e) {
+        } catch (IdentityMappingException _) {
             return Optional.empty();
         }
     }

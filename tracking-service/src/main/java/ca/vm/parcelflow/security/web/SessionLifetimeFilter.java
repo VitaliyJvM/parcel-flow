@@ -34,10 +34,14 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       marked as background ({@value #BACKGROUND_HEADER}{@code : true}). The UI marks automatic
  *       polling that way unless the user has interacted with the page since its previous request,
  *       so only real use keeps a session alive.</li>
- *   <li><b>Never unbounded:</b> the login success handler records the login time
- *       ({@link #sessionStarted}). An authenticated session that somehow lacks it (the security
- *       context was stored by something other than the OIDC login, e.g. Spring Security Test) is
- *       given one on first sight, so both limits still apply from then on.</li>
+ *   <li><b>Never unbounded:</b> the login success handler records the login time and the first
+ *       activity ({@link #sessionStarted}). An authenticated session that has neither (the security
+ *       context was stored by something other than the OIDC login, e.g. Spring Security Test) has
+ *       never been measured, so it is given both on first sight and both limits apply from then
+ *       on.</li>
+ *   <li><b>Fail closed:</b> a session with only one of the two, or with a value that is not an
+ *       {@link Instant}, was measured and then damaged. It is ended rather than restarted, because
+ *       re-recording the login time would extend it.</li>
  * </ul>
  *
  * <p>Ending a session invalidates it and clears the security context, so the rest of the chain sees
@@ -88,9 +92,10 @@ public final class SessionLifetimeFilter extends OncePerRequestFilter {
         HttpSession session = request.getSession(false);
         if (session != null && isAuthenticated(session)) {
             Instant now = clock.instant();
-            if (instant(session, AUTHENTICATED_AT) == null || instant(session, LAST_ACTIVITY_AT) == null) {
+            if (session.getAttribute(AUTHENTICATED_AT) == null && session.getAttribute(LAST_ACTIVITY_AT) == null) {
                 log.warn("Authenticated session without a recorded login time; starting its lifetime now");
-                sessionStarted(request);
+                session.setAttribute(AUTHENTICATED_AT, now);
+                session.setAttribute(LAST_ACTIVITY_AT, now);
             }
             String expiry = expiry(session, now);
             if (expiry != null) {
@@ -102,10 +107,16 @@ public final class SessionLifetimeFilter extends OncePerRequestFilter {
         chain.doFilter(request, response);
     }
 
-    /** The reason the session must end now, or null if it may continue. */
+    /**
+     * The reason the session must end now, or null if it may continue. A missing or malformed
+     * timestamp is a reason to end it: the limits cannot be evaluated, so the session is not trusted.
+     */
     private String expiry(HttpSession session, Instant now) {
         Instant authenticatedAt = instant(session, AUTHENTICATED_AT);
         Instant lastActivityAt = instant(session, LAST_ACTIVITY_AT);
+        if (authenticatedAt == null || lastActivityAt == null) {
+            return "session lifetime record missing or malformed";
+        }
         if (!now.isBefore(authenticatedAt.plus(absoluteTimeout))) {
             return "absolute lifetime of " + absoluteTimeout + " reached";
         }
@@ -118,7 +129,7 @@ public final class SessionLifetimeFilter extends OncePerRequestFilter {
     private void end(HttpSession session, String reason) {
         try {
             session.invalidate();
-        } catch (IllegalStateException alreadyInvalid) {
+        } catch (IllegalStateException _) {
             // Invalidated concurrently (logout in another request): the outcome is the same.
         }
         securityContextHolderStrategy.clearContext();
@@ -128,7 +139,7 @@ public final class SessionLifetimeFilter extends OncePerRequestFilter {
     private static boolean isAuthenticated(HttpSession session) {
         try {
             return session.getAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY) != null;
-        } catch (IllegalStateException invalidated) {
+        } catch (IllegalStateException _) {
             return false;
         }
     }

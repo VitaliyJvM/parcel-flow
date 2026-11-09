@@ -127,16 +127,41 @@ class SessionLifetimeFilterTest {
     }
 
     @Test
-    @DisplayName("never unbounded: a session without a login time gets one on first sight; both limits apply")
-    void missingLoginTimeStartsTheClock() throws Exception {
+    @DisplayName("never unbounded: a session with no lifetime record gets one on first sight; both limits apply")
+    void missingRecordStartsTheClock() throws Exception {
         session.removeAttribute(SessionLifetimeFilter.AUTHENTICATED_AT);
+        session.removeAttribute(SessionLifetimeFilter.LAST_ACTIVITY_AT);
         clock.advance(Duration.ofHours(1));
         Instant firstSeen = clock.instant();
         assertThat(request(true)).isTrue();
         assertThat(session.getAttribute(SessionLifetimeFilter.AUTHENTICATED_AT)).isEqualTo(firstSeen);
+        assertThat(session.getAttribute(SessionLifetimeFilter.LAST_ACTIVITY_AT)).isEqualTo(firstSeen);
 
         clock.set(firstSeen.plus(IDLE));
         assertThat(request(true)).as("idle limit from first sight").isFalse();
+    }
+
+    @Test
+    @DisplayName("fail closed: a missing login time with a recorded activity ends the session, never restarts it")
+    void missingLoginTimeEndsTheSession() throws Exception {
+        session.removeAttribute(SessionLifetimeFilter.AUTHENTICATED_AT);
+        clock.advance(Duration.ofMinutes(1));
+        assertThat(request(false)).isFalse();
+    }
+
+    @Test
+    @DisplayName("fail closed: a missing activity time ends the session and does not re-record the login time")
+    void missingActivityTimeEndsTheSession() throws Exception {
+        session.removeAttribute(SessionLifetimeFilter.LAST_ACTIVITY_AT);
+        clock.advance(ABSOLUTE.minusMinutes(1));
+        assertThat(request(false)).isFalse();
+    }
+
+    @Test
+    @DisplayName("fail closed: a timestamp that is not an Instant ends the session")
+    void malformedTimestampEndsTheSession() throws Exception {
+        session.setAttribute(SessionLifetimeFilter.AUTHENTICATED_AT, LOGIN.toString());
+        assertThat(request(false)).isFalse();
     }
 
     @Test

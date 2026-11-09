@@ -303,16 +303,17 @@ jobs:
         # before Playwright's longer tests start.
         run: |
           jar="$(mktemp)"
+          http_status='%{http_code}'
           scripts/oidc-login.sh http://localhost:8081 retailer.alpha PARCELFLOW_RETAILER_PASSWORD "$jar"
-          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" http://localhost:8081/api/retailers/alpha-goods/shipments)" = 200
-          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" http://localhost:8081/api/retailers/beta-supplies/shipments)" = 403
-          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" http://localhost:8081/api/admin/failed-events)" = 403
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/retailers/alpha-goods/shipments)" = 401
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/retailers/alpha-goods/shipments)" = 200
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/retailers/beta-supplies/shipments)" = 403
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/admin/failed-events)" = 403
+          test "$(curl -s -o /dev/null -w "$http_status" http://127.0.0.1:8080/api/retailers/alpha-goods/shipments)" = 401
           token="$(curl -s -b "$jar" -c "$jar" http://localhost:8081/api/auth/csrf | jq -r .token)"
           end_session="$(curl -s -o /dev/null -w '%{redirect_url}' -b "$jar" -c "$jar" --data-urlencode "_csrf=$token" http://localhost:8081/logout)"
           case "$end_session" in http://localhost:8180/realms/parcelflow/protocol/openid-connect/logout?*) ;; *) echo "unexpected logout redirect"; exit 1 ;; esac
           test "$(curl -s -o /dev/null -w '%{redirect_url}' -b "$jar" "$end_session")" = http://localhost:8081/signed-out
-          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" http://localhost:8081/api/retailers/alpha-goods/shipments)" = 401
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/retailers/alpha-goods/shipments)" = 401
           rm -f "$jar"
 
       - name: Playwright
