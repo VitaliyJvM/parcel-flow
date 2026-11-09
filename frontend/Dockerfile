@@ -23,8 +23,16 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.29.3-alpine AS runtime
 
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
-COPY nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
+COPY nginx/proxy-to-tracking-service.inc /etc/nginx/conf.d/proxy-to-tracking-service.inc
+# Rendered by the image's entrypoint (envsubst) into /etc/nginx/conf.d/security-headers.inc at
+# start-up. The filter limits substitution to our own variable, so nginx's $variables survive.
+COPY nginx/security-headers.inc.template /etc/nginx/templates/security-headers.inc.template
 COPY --from=build /app/dist/parcelflow-web/browser /usr/share/nginx/html
+
+# The identity provider's browser-facing origin, allowed as a CSP form-action target (logout
+# redirects there). Compose overrides it; the default matches the local Keycloak.
+ENV OIDC_PROVIDER_ORIGIN=http://localhost:8180 \
+    NGINX_ENVSUBST_FILTER=^OIDC_PROVIDER_ORIGIN$
 
 EXPOSE 8080
 

@@ -6,6 +6,7 @@ import ca.vm.parcelflow.shipment.api.ShipmentResponse;
 import ca.vm.parcelflow.shipment.domain.Shipment;
 import ca.vm.parcelflow.shipment.domain.ShipmentStatus;
 import java.time.Clock;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -106,10 +107,9 @@ public class ShipmentService {
      * through {@link #getShipmentTracking}, which is. Caching under a second key would add a second
      * entry for the event pipeline to evict.
      *
-     * <p>This is the single place a future retailer-ownership check belongs: compare the caller's
-     * retailer with {@code shipment.getRetailerId()} and, on a mismatch, throw the same
-     * {@link TrackingNumberNotFoundException} so a non-owner cannot tell "not yours" from "does not
-     * exist" and enumerate other retailers' tracking numbers.
+     * <p>Unscoped. The retailer-ownership check for the HTTP API is in
+     * {@link ShipmentAccessService#lookup}, which reports a non-owner's lookup with the same
+     * {@link TrackingNumberNotFoundException} as a miss.
      *
      * @throws TrackingNumberNotFoundException if no shipment matches
      */
@@ -119,6 +119,12 @@ public class ShipmentService {
                 .findByCarrierCodeAndTrackingNumber(carrierCode, trackingNumber)
                 .map(ShipmentResponse::from)
                 .orElseThrow(() -> new TrackingNumberNotFoundException(carrierCode, trackingNumber));
+    }
+
+    /** The owning retailer of the shipment registered under a (carrier, tracking number) pair. */
+    @Transactional(readOnly = true)
+    public Optional<String> findRetailerId(CarrierCode carrierCode, String trackingNumber) {
+        return shipmentRepository.findRetailerIdByCarrierCodeAndTrackingNumber(carrierCode, trackingNumber);
     }
 
     @Transactional(readOnly = true)

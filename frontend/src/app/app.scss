@@ -43,27 +43,41 @@
   white-space: nowrap;
 }
 
-.pf-demo-banner {
-  display: flex;
+.pf-retailer-fixed {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-  font: var(--mat-sys-body-small);
-  background: var(--mat-sys-tertiary-container);
-  color: var(--mat-sys-on-tertiary-container);
+  gap: 6px;
+  padding: 0 12px;
+  height: 36px;
+  border-radius: 18px;
+  font: var(--mat-sys-label-large);
+  background: var(--mat-sys-secondary-container);
+  color: var(--mat-sys-on-secondary-container);
+}
 
-  mat-icon {
-    flex: none;
-    font-size: 18px;
-    width: 18px;
-    height: 18px;
-  }
-
-  a {
-    color: inherit;
-    font-weight: 600;
+.pf-user-button {
+  .pf-user-name {
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+.pf-role-chip {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font: var(--mat-sys-label-small);
+  letter-spacing: 0.04em;
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+}
+
+.pf-session-loading {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 10;
 }
 
 .pf-container {
@@ -111,7 +125,7 @@
 @media (max-width: 599.98px) {
   .pf-brand span,
   .pf-retailer-caption,
-  .pf-banner-extra {
+  .pf-user-name {
     display: none;
   }
 }

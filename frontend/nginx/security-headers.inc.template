@@ -1,0 +1,20 @@
+# Included in every location, because nginx does not inherit add_header into a location that
+# declares its own.
+#
+# A template: the nginx image's entrypoint runs envsubst over /etc/nginx/templates/*.template at
+# container start and writes the result to /etc/nginx/conf.d/. Only OIDC_PROVIDER_ORIGIN is
+# substituted (NGINX_ENVSUBST_FILTER in the Dockerfile), so nginx's own $variables are untouched.
+#
+# form-action includes the identity provider's origin because logout is a form POST to /logout that
+# the tracking service answers with a redirect to Keycloak's end-session endpoint, and form-action
+# also governs where a form submission may be redirected.
+#
+# CSP: scripts only from this origin (the production build emits no inline scripts: critical-CSS
+# inlining is disabled in angular.json for exactly this reason). Styles allow 'unsafe-inline'
+# because Angular injects component styles at runtime. Fonts are self-hosted: no external origin.
+add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' ${OIDC_PROVIDER_ORIGIN}; frame-ancestors 'none'" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Referrer-Policy "no-referrer" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+add_header Cross-Origin-Opener-Policy "same-origin" always;

@@ -54,8 +54,10 @@
     <div class="pf-callout pf-callout-success" role="status">
       <mat-icon aria-hidden="true">check_circle</mat-icon>
       <div class="pf-callout-body">
-        <strong>Shipment registered.</strong> It will move once carrier events arrive. Use the
-        <em>Simulate</em> tab to generate them.
+        <strong>Shipment registered.</strong> It will move once carrier events arrive.
+        @if (session.isAdmin()) {
+          Use the <em>Simulate</em> tab to generate them.
+        }
       </div>
     </div>
   }
@@ -165,7 +167,12 @@
               <div class="pf-empty">
                 <mat-icon aria-hidden="true">timeline</mat-icon>
                 <h2>No carrier events yet</h2>
-                <p>Events appear here as the carrier publishes them. Try the Simulate tab.</p>
+                <p>
+                  Events appear here as the carrier publishes them.
+                  @if (session.isAdmin()) {
+                    Try the Simulate tab.
+                  }
+                </p>
               </div>
             } @else {
               <pf-tracking-timeline
@@ -205,16 +212,19 @@
         </div>
       </mat-tab>
 
-      <mat-tab label="Simulate">
-        <div class="pf-tab-body">
-          <pf-simulation-panel
-            [shipmentId]="s.shipmentId"
-            [trackingNumber]="s.trackingNumber"
-            [carrier]="s.carrierCode"
-            [locked]="true"
-          />
-        </div>
-      </mat-tab>
+      <!-- The simulator CLI publishes straight to Kafka: an operator tool, shown to ADMIN only. -->
+      @if (session.isAdmin()) {
+        <mat-tab label="Simulate">
+          <div class="pf-tab-body">
+            <pf-simulation-panel
+              [shipmentId]="s.shipmentId"
+              [trackingNumber]="s.trackingNumber"
+              [carrier]="s.carrierCode"
+              [locked]="true"
+            />
+          </div>
+        </mat-tab>
+      }
     </mat-tab-group>
   }
 }

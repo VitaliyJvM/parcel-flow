@@ -9,6 +9,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import java.util.UUID;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,17 +20,18 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Administrative endpoints for triaging events that could not be processed.
  *
- * <p><b>These endpoints are unauthenticated in this portfolio build.</b> They expose operational
- * detail about failures across every retailer and can trigger reprocessing, so in any real
- * deployment they belong behind an operator role and on an interface that is not reachable from the
- * public internet. Authentication is out of the MVP scope, not out of the design: the {@code
- * /api/admin} prefix exists so the whole subtree can be secured with one rule.
+ * <p><b>ADMIN only.</b> These endpoints expose operational detail about failures across every
+ * retailer — a dead-lettered event is not reliably attributable to a retailer at all, since its
+ * payload may not have parsed — and the retry reprocesses an event. The {@code /api/admin/**} URL
+ * rule in {@code SecurityConfiguration} enforces the role; {@code @PreAuthorize} here repeats it so
+ * the controller stays protected if the URL rules are ever rearranged. The retry is a POST and
+ * needs a valid CSRF token like every other state-changing request.
  */
 @RestController
 @RequestMapping("/api/admin/failed-events")
+@PreAuthorize("hasRole('ADMIN')")
 @Tag(name = "Admin: failed events",
-        description = "Operational triage of events that could not be processed. "
-                + "Unauthenticated in this portfolio build — secure before any real deployment.")
+        description = "Operational triage of events that could not be processed. ADMIN only.")
 public class FailedEventController {
 
     private static final int MAX_PAGE_SIZE = 100;

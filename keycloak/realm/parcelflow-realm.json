@@ -1,0 +1,215 @@
+{
+  "realm": "parcelflow",
+  "displayName": "ParcelFlow (local development)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 10,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "roles": {
+    "realm": [
+      {
+        "name": "ADMIN",
+        "description": "ParcelFlow operator: every retailer's shipments, failed-event diagnostics and retry."
+      },
+      {
+        "name": "RETAILER",
+        "description": "ParcelFlow retailer user: own retailer's shipments only. Requires the retailer_id attribute."
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "parcelflow-bff",
+      "name": "ParcelFlow web (BFF)",
+      "description": "Confidential OIDC client used by the tracking service on behalf of the Angular UI. The browser never receives its tokens.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${PARCELFLOW_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": true,
+      "rootUrl": "",
+      "baseUrl": "",
+      "redirectUris": [
+        "http://localhost:8081/login/oauth2/code/keycloak",
+        "http://localhost:4200/login/oauth2/code/keycloak",
+        "http://localhost:8080/login/oauth2/code/keycloak"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8081/signed-out##http://localhost:4200/signed-out##http://localhost:8080/signed-out",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "use.refresh.tokens": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "parcelflow-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "parcelflow-retailer-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "retailer_id",
+            "claim.name": "retailer_id",
+            "multivalued": "true",
+            "aggregate.attrs": "false",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "6f1c0a52-3b7e-4d0e-9a41-2d5f8c7b1a01",
+      "username": "ops.admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Olive",
+      "lastName": "Operator",
+      "email": "ops.admin@parcelflow.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${PARCELFLOW_ADMIN_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "ADMIN",
+        "default-roles-parcelflow"
+      ],
+      "requiredActions": []
+    },
+    {
+      "id": "0d2b6c9e-7a14-4f3b-8e25-1c9f4a6d2b02",
+      "username": "retailer.alpha",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alex",
+      "lastName": "Alpha",
+      "email": "retailer.alpha@parcelflow.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${PARCELFLOW_RETAILER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RETAILER",
+        "default-roles-parcelflow"
+      ],
+      "requiredActions": [],
+      "attributes": {
+        "retailer_id": [
+          "alpha-goods"
+        ]
+      }
+    },
+    {
+      "id": "9a7e3f10-5c2d-4b8a-b6e1-4f0d8c2a7e03",
+      "username": "retailer.beta",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Blair",
+      "lastName": "Beta",
+      "email": "retailer.beta@parcelflow.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${PARCELFLOW_RETAILER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RETAILER",
+        "default-roles-parcelflow"
+      ],
+      "requiredActions": [],
+      "attributes": {
+        "retailer_id": [
+          "beta-supplies"
+        ]
+      }
+    },
+    {
+      "id": "c4e8a2d6-1f3b-4c7e-9d05-8b2f6e4a1c04",
+      "username": "retailer.unassigned",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Uma",
+      "lastName": "Unassigned",
+      "email": "retailer.unassigned@parcelflow.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${PARCELFLOW_RETAILER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "RETAILER",
+        "default-roles-parcelflow"
+      ],
+      "requiredActions": []
+    }
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"Username\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"Email\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"First name\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"Last name\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"retailer_id\",\"displayName\":\"Retailer ID\",\"validations\":{\"pattern\":{\"pattern\":\"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$\",\"error-message\":\"Retailer ID must be 1-64 letters, digits, '.', '_' or '-'\"}},\"permissions\":{\"view\":[\"admin\"],\"edit\":[\"admin\"]},\"multivalued\":false,\"annotations\":{\"description\":\"ParcelFlow retailer assignment for RETAILER users. Managed by realm administrators only.\"}}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}]}"
+          ]
+        }
+      }
+    ]
+  }
+}

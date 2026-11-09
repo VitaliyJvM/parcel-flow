@@ -52,6 +52,21 @@ export type FailedEventRetryResponse = Nullable<
   'processingStatus' | 'shipmentStatus' | 'duplicate'
 >;
 
+export type Role = Schemas['SessionUser']['role'];
+
+export type SessionUser = Nullable<
+  Schemas['SessionUser'],
+  // AuthSessionResponse.SessionUser.retailerId is null for an ADMIN.
+  'retailerId'
+>;
+
+/** `user` is absent when `authenticated` is false (AuthSessionResponse.anonymous()). */
+export type AuthSessionResponse = Omit<Schemas['AuthSessionResponse'], 'user'> & {
+  user?: SessionUser | null;
+};
+
+export type CsrfTokenResponse = Schemas['CsrfTokenResponse'];
+
 /** `PageResponse<T>` envelope; identical for every paginated endpoint. */
 export interface Page<T> {
   content: T[];

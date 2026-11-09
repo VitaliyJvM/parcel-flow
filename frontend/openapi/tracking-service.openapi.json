@@ -1,6 +1,51 @@
 {
   "components": {
     "schemas": {
+      "AuthSessionResponse": {
+        "description": "The browser session's authentication state",
+        "properties": {
+          "authenticated": {
+            "type": "boolean"
+          },
+          "user": {
+            "$ref": "#/components/schemas/SessionUser",
+            "description": "The signed-in user; absent when not authenticated"
+          }
+        },
+        "type": "object"
+      },
+      "CsrfToken": {
+        "properties": {
+          "headerName": {
+            "type": "string"
+          },
+          "parameterName": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CsrfTokenResponse": {
+        "description": "A CSRF token and where to send it",
+        "properties": {
+          "headerName": {
+            "example": "X-XSRF-TOKEN",
+            "type": "string"
+          },
+          "parameterName": {
+            "example": "_csrf",
+            "type": "string"
+          },
+          "token": {
+            "description": "Masked per response; any issued value stays valid for the session",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "FailedEventResponse": {
         "description": "A carrier event that could not be processed",
         "properties": {
@@ -380,6 +425,36 @@
         ],
         "type": "object"
       },
+      "SessionUser": {
+        "description": "The signed-in user",
+        "properties": {
+          "displayName": {
+            "example": "Alex Alpha",
+            "type": "string"
+          },
+          "retailerId": {
+            "description": "The only retailer a RETAILER may act for, assigned in the identity provider. Absent for ADMIN, who may act for any retailer.",
+            "example": "alpha-goods",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "ADMIN",
+              "RETAILER"
+            ],
+            "type": "string"
+          },
+          "subject": {
+            "description": "Stable identifier at the identity provider (OIDC sub)",
+            "type": "string"
+          },
+          "username": {
+            "example": "retailer.alpha",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ShipmentResponse": {
         "description": "Current tracking state of a shipment",
         "properties": {
@@ -510,10 +585,18 @@
         },
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "browserSession": {
+        "description": "HttpOnly session cookie set by the OIDC login. Named `__Host-parcelflow-session` in production configurations.",
+        "in": "cookie",
+        "name": "PARCELFLOW_SESSION",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
-    "description": "Shipment tracking and carrier event processing.\n\nParcelFlow is an independent portfolio and training project. It is not affiliated with or based on proprietary systems from any delivery carriers or ecommerce retailers. Carrier codes are fictional.",
+    "description": "Shipment tracking and carrier event processing.\n\n**Authentication.** Every `/api/**` endpoint except `/api/auth/*` requires a browser session established by the OIDC login (`GET /oauth2/authorization/keycloak`). Unauthenticated calls get 401, forbidden ones 403, both as `application/problem+json`. State-changing requests also need the `X-XSRF-TOKEN` header carrying the session's CSRF token from `GET /api/auth/csrf`.\n\n**Retailer isolation.** A RETAILER sees only their own retailer's shipments; another retailer's shipment answers 404 exactly as a nonexistent one does. ADMIN sees every retailer and the `/api/admin` endpoints.\n\nParcelFlow is an independent portfolio and training project. It is not affiliated with or based on proprietary systems from any delivery carriers or ecommerce retailers. Carrier codes are fictional.",
     "license": {
       "name": "MIT"
     },
@@ -667,8 +750,65 @@
         ]
       }
     },
+    "/api/auth/csrf": {
+      "get": {
+        "description": "Send it as the `X-XSRF-TOKEN` header of every state-changing request, or as the `_csrf` field of a form POST (logout). Every value issued stays valid until the session ends or the user logs in or out.",
+        "operationId": "csrf",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CsrfToken"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CsrfTokenResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [],
+        "summary": "Get the session's CSRF token",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/api/auth/session": {
+      "get": {
+        "description": "Returns `authenticated: false` when there is no authenticated session. Never returns tokens. Restores the UI's state after a page reload.",
+        "operationId": "session",
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [],
+        "summary": "Describe the current browser session",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
     "/api/retailers/{retailerId}/shipments": {
       "get": {
+        "description": "A RETAILER may list only their own retailer id; ADMIN may list any.",
         "operationId": "listRetailerShipments",
         "parameters": [
           {
@@ -731,7 +871,17 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "A page of shipments"
+          },
+          "403": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseShipmentResponse"
+                }
+              }
+            },
+            "description": "Not permitted to act for this retailer"
           }
         },
         "summary": "List a retailer's shipments, newest first",
@@ -774,15 +924,25 @@
             },
             "description": "Validation failed"
           },
-          "409": {
+          "403": {
             "content": {
-              "*/*": {
+              "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShipmentResponse"
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             },
-            "description": "Tracking number already registered for this carrier"
+            "description": "A RETAILER may register shipments only under their own retailer id"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Tracking number already registered for this carrier. The pair is unique across all retailers. `existingShipmentAccessible` says whether the caller may open the existing shipment; nothing else about it is disclosed."
           }
         },
         "summary": "Register a shipment for tracking",
@@ -854,7 +1014,7 @@
                 }
               }
             },
-            "description": "No shipment is registered for this carrier and tracking number"
+            "description": "No shipment is registered for this carrier and tracking number, or it is not the caller's"
           }
         },
         "summary": "Find a shipment by carrier and tracking number",
@@ -897,7 +1057,7 @@
                 }
               }
             },
-            "description": "No such shipment"
+            "description": "No such shipment, or not the caller's"
           }
         },
         "summary": "Get the current status of a shipment",
@@ -963,7 +1123,7 @@
                 }
               }
             },
-            "description": "No such shipment"
+            "description": "No such shipment, or not the caller's"
           }
         },
         "summary": "Get a parcel's tracking history",
@@ -1029,7 +1189,7 @@
                 }
               }
             },
-            "description": "No such shipment"
+            "description": "No such shipment, or not the caller's"
           }
         },
         "summary": "List the notification records generated for a parcel",
@@ -1039,10 +1199,19 @@
       }
     }
   },
+  "security": [
+    {
+      "browserSession": []
+    }
+  ],
   "tags": [
     {
-      "description": "Operational triage of events that could not be processed. Unauthenticated in this portfolio build — secure before any real deployment.",
+      "description": "Operational triage of events that could not be processed. ADMIN only.",
       "name": "Admin: failed events"
+    },
+    {
+      "description": "Browser session state for the web UI",
+      "name": "Authentication"
     },
     {
       "description": "Register parcels and read their current tracking state",

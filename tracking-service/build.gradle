@@ -18,6 +18,10 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-kafka'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-cache'
+    // Browser authentication: this service is the OAuth2/OIDC confidential client (the BFF) for the
+    // Angular UI. Tokens stay in the server-side session; the browser holds only a session cookie.
+    // No resource-server starter: nothing here accepts bearer tokens yet (that is Phase 3).
+    implementation 'org.springframework.boot:spring-boot-starter-security-oauth2-client'
 
     // Flyway 10+ ships database support in per-vendor modules.
     implementation 'org.flywaydb:flyway-database-postgresql'
@@ -47,6 +51,13 @@ dependencies {
     // Spring Boot 4 moved MockMvc test auto-configuration out of spring-boot-test-autoconfigure
     // into a per-stack module.
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    // Spring Security Test (csrf(), authentication(), @WithSecurityContext) plus Boot's wiring of it
+    // into @AutoConfigureMockMvc. Boot 4 moved that wiring out of the core test starter: with only
+    // spring-security-test on the classpath, MockMvc silently ignores the test security context.
+    testImplementation 'org.springframework.boot:spring-boot-starter-security-oauth2-client-test'
+    // Parses Keycloak's login form in the real-OIDC integration test, so the test drives the same
+    // HTML a browser does rather than a back door such as the direct-grant endpoint.
+    testImplementation 'org.jsoup:jsoup:1.21.2'
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
     testImplementation 'org.testcontainers:testcontainers-postgresql'

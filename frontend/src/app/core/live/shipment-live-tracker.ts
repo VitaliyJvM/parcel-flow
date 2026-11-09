@@ -66,7 +66,13 @@ function attempt<T>(source: Observable<T>): Observable<Outcome<T>> {
  *
  * Scheduling rules (see `nextPoll`): fast while things are changing, slower when quiet, a grace
  * window after DELIVERED, exponential backoff on errors, paused while the tab is hidden, and a
- * full stop on 404. Ticks are strictly sequential (`repeat` waits for the previous tick to
+ * full stop on 404.
+ *
+ * Session idle timeout: the first tick after (re)starting — opening the page, Refresh, Resume, the
+ * tab becoming visible again — is the user's doing. Every scheduled tick after it is marked as
+ * background (see `UserActivity`), so a page left open does not keep the session alive by itself;
+ * after 30 minutes without interaction the backend ends the session and the next tick's 401 sends
+ * the user to the login page. Ticks are strictly sequential (`repeat` waits for the previous tick to
  * complete), so requests never overlap; `switchMap` on every restart cancels anything in flight,
  * so a response for a previous shipment or a pre-refresh tick can never land.
  *
@@ -170,7 +176,12 @@ export class ShipmentLiveTracker {
   }
 
   private loop(id: string): Observable<void> {
-    return defer(() => this.tick(id)).pipe(
+    let first = true;
+    return defer(() => {
+      const background = !first;
+      first = false;
+      return this.tick(id, background);
+    }).pipe(
       repeat({
         delay: () => {
           if (this._notFound()) {
@@ -193,9 +204,9 @@ export class ShipmentLiveTracker {
     );
   }
 
-  private tick(id: string): Observable<void> {
+  private tick(id: string, background: boolean): Observable<void> {
     this._busy.set(true);
-    const probe = { probe: true };
+    const probe = { probe: true, background };
     return forkJoin({
       shipment: attempt(this.api.get(id, probe)),
       eventCount: attempt(this.api.events(id, { page: 0, size: 1 }, probe)),
@@ -237,11 +248,19 @@ export class ShipmentLiveTracker {
         }
         return forkJoin({
           events: needEvents
-            ? attempt(this.loadAll((page) => this.api.events(id, page), PAGE_LIMITS.trackingEvents))
+            ? attempt(
+                this.loadAll(
+                  (page) => this.api.events(id, page, { background }),
+                  PAGE_LIMITS.trackingEvents,
+                ),
+              )
             : of(null),
           notifications: needNotifications
             ? attempt(
-                this.loadAll((page) => this.api.notifications(id, page), PAGE_LIMITS.notifications),
+                this.loadAll(
+                  (page) => this.api.notifications(id, page, { background }),
+                  PAGE_LIMITS.notifications,
+                ),
               )
             : of(null),
         }).pipe(map((loaded) => ({ changed, failures, ...loaded })));

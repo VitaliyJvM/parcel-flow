@@ -14,27 +14,27 @@ interface Limitation {
   template: `
     <header class="pf-page-header">
       <div>
-        <h1 class="pf-title">About this demo</h1>
+        <h1 class="pf-title">About & security</h1>
         <p class="pf-subtitle">
           ParcelFlow is an independent portfolio project. Carriers are fictional.
         </p>
       </div>
     </header>
 
-    <div class="pf-callout pf-callout-warning" role="note">
-      <mat-icon aria-hidden="true">warning</mat-icon>
+    <div class="pf-callout pf-callout-info" role="note">
+      <mat-icon aria-hidden="true">verified_user</mat-icon>
       <div class="pf-callout-body">
-        <strong>Local demo — no authentication.</strong> This build is meant for
-        <strong>localhost only</strong>. Docker Compose publishes every port on 127.0.0.1, and the
-        nginx in front of this UI forwards only <code>/api/</code>.
+        <strong>Signed in through Keycloak (OpenID Connect).</strong> The tracking service is this
+        UI's backend-for-frontend: it runs the login, keeps every token on the server, and gives the
+        browser only an HttpOnly session cookie. Every API request is authorized on the server.
       </div>
     </div>
 
     <div class="pf-about-grid">
-      <section class="pf-card" aria-labelledby="limits-heading">
-        <h2 id="limits-heading">Security limitations</h2>
+      <section class="pf-card" aria-labelledby="model-heading">
+        <h2 id="model-heading">How access works</h2>
         <ul class="pf-limits">
-          @for (item of limitations; track item.title) {
+          @for (item of model; track item.title) {
             <li>
               <mat-icon aria-hidden="true">{{ item.icon }}</mat-icon>
               <div>
@@ -47,25 +47,28 @@ interface Limitation {
       </section>
 
       <div class="pf-about-side">
-        <section class="pf-card" aria-labelledby="before-heading">
-          <h2 id="before-heading">Required before any public deployment</h2>
-          <ol class="pf-steps">
-            <li>Add authentication to the tracking service.</li>
-            <li>Enforce retailer scoping in the backend, from the authenticated user, not the URL.</li>
-            <li>Protect <code>/api/admin/**</code> with an operator role and audit manual retries.</li>
-            <li>Move actuator to a management port that is not publicly routed.</li>
-            <li>Put Grafana and Prometheus behind a login.</li>
-            <li>Never publish PostgreSQL, Redis or Kafka ports; add credentials and TLS.</li>
-          </ol>
-          <p class="pf-muted pf-small">
-            Details and rationale: <code>docs/analysis/angular-frontend-implementation.md</code>, §9.
-          </p>
+        <section class="pf-card" aria-labelledby="limits-heading">
+          <h2 id="limits-heading">Known limitations of this local build</h2>
+          <ul class="pf-limits">
+            @for (item of limitations; track item.title) {
+              <li>
+                <mat-icon aria-hidden="true">{{ item.icon }}</mat-icon>
+                <div>
+                  <h3>{{ item.title }}</h3>
+                  <p>{{ item.text }}</p>
+                </div>
+              </li>
+            }
+          </ul>
+          <p class="pf-muted pf-small">Details: <code>docs/security.md</code> in the repository.</p>
         </section>
 
         <section class="pf-card" aria-labelledby="ui-heading">
           <h2 id="ui-heading">What the UI does and does not do</h2>
           <ul class="pf-plain">
-            <li>Uses only the public REST API, through same-origin relative paths.</li>
+            <li>
+              Uses only same-origin relative paths: the REST API and the login/logout endpoints.
+            </li>
             <li>
               Polls for live updates (no WebSockets or SSE). It watches event and notification
               counts as well as the shipment version, so late, superseded scans still appear.
@@ -75,8 +78,8 @@ interface Limitation {
               <code>PENDING</code>.
             </li>
             <li>
-              Builds the carrier simulator's <code>docker compose run</code> command; it never
-              runs anything.
+              Builds the carrier simulator's <code>docker compose run</code> command for operators;
+              it never runs anything.
             </li>
             <li>
               Only SWIFTPOST and PACIFICA have event normalizers; NORDEX and METROLINK events are
@@ -145,35 +148,75 @@ interface Limitation {
   `,
 })
 export class AboutPage {
-  protected readonly limitations: Limitation[] = [
+  protected readonly model: Limitation[] = [
     {
-      icon: 'lock_open',
-      title: 'No authentication',
+      icon: 'login',
+      title: 'OpenID Connect login, tokens stay on the server',
       text:
-        'The tracking service has no login and no Spring Security. Every endpoint, including ' +
-        'POST /api/admin/failed-events/{id}/retry, accepts anonymous requests.',
+        'Sign-in is the authorization code flow with PKCE, completed by the tracking service as a ' +
+        'confidential client. Access, refresh and ID tokens live in the server-side session; the ' +
+        'browser holds an HttpOnly, SameSite=Lax session cookie and nothing in local or session ' +
+        'storage.',
+    },
+    {
+      icon: 'badge',
+      title: 'Two roles: ADMIN and RETAILER',
+      text:
+        'ADMIN sees every retailer, failed-event diagnostics and retry, and the simulator command ' +
+        'builder. RETAILER sees only their own retailer. Roles come from Keycloak.',
     },
     {
       icon: 'storefront',
-      title: 'No retailer isolation',
+      title: 'Retailer isolation is enforced by the backend',
       text:
-        "The retailer selector is a view filter. Anyone can read any retailer's shipments by " +
-        'changing the ID in the URL.',
+        "A retailer's retailer is assigned to their Keycloak account by an administrator. The " +
+        'backend checks it on every request: another retailer\'s shipment answers "not found", ' +
+        'exactly like one that does not exist, and a forged retailer ID is refused.',
     },
     {
-      icon: 'visibility_off',
-      title: 'Hiding UI is not authorization',
-      text: 'Disabled or hidden buttons here do not stop the same request being sent with curl.',
+      icon: 'shield',
+      title: 'CSRF protection on every change',
+      text:
+        'State-changing requests (registration, retry, logout) carry a CSRF token bound to the ' +
+        'server-side session. Hiding a button is never what stops a request.',
     },
     {
-      icon: 'key',
-      title: 'Shipment IDs act like bearer tokens',
-      text: 'Whoever holds a shipment ID can read its status, history and notification records.',
+      icon: 'logout',
+      title: 'Logout ends both sessions',
+      text:
+        'Signing out invalidates the ParcelFlow session and ends the Keycloak single sign-on ' +
+        'session, so the next sign-in asks for credentials again.',
+    },
+  ];
+
+  protected readonly limitations: Limitation[] = [
+    {
+      icon: 'construction',
+      title: 'Keycloak runs in development mode',
+      text:
+        'Plain HTTP on localhost, an in-container database, and a realm re-imported on every ' +
+        'container recreation. Fine for a laptop; not a production identity provider.',
+    },
+    {
+      icon: 'http',
+      title: 'HTTP on localhost',
+      text:
+        'Locally the session cookie is not marked Secure because there is no TLS. The production ' +
+        'configuration requires HTTPS and a Secure, __Host- prefixed cookie.',
+    },
+    {
+      icon: 'dns',
+      title: 'Sessions live in one service instance',
+      text:
+        'Servlet sessions are in memory: a restart signs everyone out, and running several ' +
+        'instances would need sticky sessions or a shared session store.',
     },
     {
       icon: 'monitoring',
-      title: 'Grafana has anonymous Admin access',
-      text: 'Port 3000, for convenience on a laptop. Prometheus (port 9090) has no login either.',
+      title: 'Infrastructure around the API is not secured',
+      text:
+        'Grafana has anonymous Admin access (port 3000); Prometheus, Redis and Redpanda have no ' +
+        'login. Every port is bound to 127.0.0.1 for that reason.',
     },
   ];
 }

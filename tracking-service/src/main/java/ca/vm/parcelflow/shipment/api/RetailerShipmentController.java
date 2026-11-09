@@ -1,10 +1,12 @@
 package ca.vm.parcelflow.shipment.api;
 
+import ca.vm.parcelflow.security.CurrentUserProvider;
 import ca.vm.parcelflow.shared.api.PageResponse;
-import ca.vm.parcelflow.shipment.ShipmentService;
+import ca.vm.parcelflow.shipment.ShipmentAccessService;
 import ca.vm.parcelflow.shipment.domain.ShipmentStatus;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -28,10 +30,12 @@ public class RetailerShipmentController {
 
     private static final int MAX_PAGE_SIZE = 100;
 
-    private final ShipmentService shipmentService;
+    private final ShipmentAccessService shipmentAccess;
+    private final CurrentUserProvider currentUser;
 
-    public RetailerShipmentController(ShipmentService shipmentService) {
-        this.shipmentService = shipmentService;
+    public RetailerShipmentController(ShipmentAccessService shipmentAccess, CurrentUserProvider currentUser) {
+        this.shipmentAccess = shipmentAccess;
+        this.currentUser = currentUser;
     }
 
     /**
@@ -41,7 +45,10 @@ public class RetailerShipmentController {
      * defaults an unbounded {@code size=100000} request could slip past.
      */
     @GetMapping("/api/retailers/{retailerId}/shipments")
-    @Operation(summary = "List a retailer's shipments, newest first")
+    @Operation(summary = "List a retailer's shipments, newest first",
+            description = "A RETAILER may list only their own retailer id; ADMIN may list any.")
+    @ApiResponse(responseCode = "200", description = "A page of shipments")
+    @ApiResponse(responseCode = "403", description = "Not permitted to act for this retailer", content = {})
     public PageResponse<ShipmentResponse> listRetailerShipments(
             @PathVariable String retailerId,
             @Parameter(description = "Filter by current status") @RequestParam(required = false)
@@ -52,7 +59,7 @@ public class RetailerShipmentController {
         PageRequest pageRequest =
                 PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return PageResponse.from(
-                shipmentService.findRetailerShipments(retailerId, status, pageRequest),
+                shipmentAccess.listRetailerShipments(currentUser.require(), retailerId, status, pageRequest),
                 ShipmentResponse::from);
     }
 }

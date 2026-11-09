@@ -2,10 +2,13 @@ package ca.vm.parcelflow.tracking.failure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ca.vm.parcelflow.security.ParcelFlowRole;
+import ca.vm.parcelflow.support.security.WithParcelFlowUser;
 import ca.vm.parcelflow.carrier.CarrierCode;
 import ca.vm.parcelflow.shipment.ShipmentRepository;
 import ca.vm.parcelflow.shipment.domain.Shipment;
@@ -38,6 +41,9 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+// Pre-dates authentication. ADMIN is the role whose view of the API is what these tests always
+// assumed: every retailer, plus the admin endpoints. Retailer isolation has its own tests.
+@WithParcelFlowUser(role = ParcelFlowRole.ADMIN)
 class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
@@ -127,7 +133,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
         UUID failedEventId = failedEventRepository.findByEventId(eventId).orElseThrow()
                 .getFailedEventId();
 
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type")
                         .value("https://parcelflow.example/problems/failed-event-not-retryable"))
@@ -155,7 +161,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
         UUID failedEventId = failedEventRepository.findByEventId(eventId).orElseThrow()
                 .getFailedEventId();
 
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.succeeded").value(true))
                 .andExpect(jsonPath("$.status").value("RESOLVED"))
@@ -183,7 +189,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
                 .getFailedEventId();
 
         // First retry processes it.
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.duplicate").value(false));
 
@@ -191,7 +197,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
         // handled by the normal pipeline, then retry again.
         store.markRetryFailed(failedEventId, new ShipmentNotFoundException(shipmentId));
 
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.succeeded").value(true))
                 .andExpect(jsonPath("$.duplicate").value(true));
@@ -211,7 +217,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
         // Claim it the way the first request would, then let a second request try.
         assertThat(store.claimForRetry(failedEventId)).isTrue();
 
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type")
                         .value("https://parcelflow.example/problems/failed-event-retry-not-available"))
@@ -234,7 +240,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
                 .getFailedEventId();
 
         // The shipment still does not exist, so reprocessing fails the same way.
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.succeeded").value(false))
                 .andExpect(jsonPath("$.status").value("FAILED"))
@@ -257,7 +263,7 @@ class FailedEventApiIntegrationTest extends PostgresIntegrationTest {
         UUID failedEventId = failedEventRepository.findByEventId(eventId).orElseThrow()
                 .getFailedEventId();
 
-        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId))
+        mockMvc.perform(post("/api/admin/failed-events/{id}/retry", failedEventId).with(csrf()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCategory").value("MALFORMED_PAYLOAD"));
 

@@ -625,3 +625,93 @@ framework code got executed. The report is for reading, and the question worth a
 | Structured JSON log fields | ◐ verified by hand against the running stack (see [operations.md](operations.md#5-structured-logging)); not asserted by a test, because asserting on an appender's output tests Boot's formatter rather than this code |
 | Resilience experiments | ◐ documented and reproducible in [operations.md](operations.md#6-resilience-verification); run by hand, not automated |
 | Load test | ◐ the harness is tested; the run itself is manual, with results in [performance-results.md](performance-results.md) |
+
+---
+
+## Authentication and authorization tests
+
+The OIDC login, sessions, CSRF, roles and retailer isolation. The model itself is in
+[security.md](security.md); this section says what proves it.
+
+### `IdentityMapperTest` — 22 tests, no Spring
+
+The fail-closed identity mapping and the isolation decision. Accepted: a retailer with exactly one
+valid assignment (Keycloak's default roles ignored), a single-valued claim, an admin (a stray
+retailer claim creates no restriction). Refused, each with its reason: no `sub`; no roles claim;
+only non-ParcelFlow roles, including lower-case look-alikes; both roles; a retailer with no, empty,
+two, non-string, or malformed assignments (blank, whitespace, path separators, encoded slashes,
+`../`, newline, 65 characters). `CurrentUser` cannot be constructed as a retailer without a retailer,
+and `canAccessRetailer` compares exactly (case and trailing space matter).
+
+### `DiscoveringClientRegistrationRepositoryTest` — 6 tests, stub HTTP provider
+
+Discovery from an internal URL with a public issuer yields a confidential, PKCE-required
+registration with public authorization and internal token endpoints; the result is cached; a
+document advertising another issuer is refused; a provider without S256 is refused; an unreachable
+provider means "no registration" (login fails closed) and is retried later; an unknown registration
+id or a missing secret yields nothing without a network call.
+
+### `BrowserSessionSecurityIntegrationTest` — 20 tests, MockMvc, real PostgreSQL
+
+What the UI relies on, without an identity provider. Every protected API family answers 401
+`authentication-required` problem+json with the caller's correlation id and no `Location`; an unknown
+session cookie is the same as none; a principal whose claims the mapper would refuse gets 403 even
+with the right authority; a plain browser navigation is redirected to `/login`; starting a login with
+Keycloak down goes to `/login?error=idp_unavailable`; Basic, bearer and form-login attempts are all
+refused (no fallback). The session endpoint is public, never contains a token, and reports role and
+retailer. CSRF: a missing or forged token is 403 `csrf-token-invalid`, logout needs a token, `GET
+/logout` does nothing. Logout invalidates the session and expires the cookie. Health details only for
+ADMIN, probes and the scrape public, other actuator paths ADMIN, OpenAPI public with the session
+scheme, standard security headers present.
+
+### `RetailerIsolationIntegrationTest` — 16 tests, MockMvc, real PostgreSQL
+
+Two retailers and an admin through every shipment endpoint. For a specific shipment — by id (also
+after the owner warmed the cache), by carrier and tracking number, its history, its notifications —
+another retailer's 404 body is **byte-for-byte the nonexistent-shipment body** apart from the
+identifier the caller sent, and never names the owner. Listing another retailer is 403, including the
+dashboard's count queries and case or encoding variants of the id. A forged `retailerId` on
+registration is 403 and stores nothing; an admin registers for anyone. A duplicate of another
+retailer's number is 409 with `existingShipmentAccessible: false` and neither the shipment id nor the
+retailer in the body; a duplicate of one's own, or an admin's, says `true`. Failed events: 403 for a
+retailer (list, detail, retry); for an admin the retry still needs CSRF. The load-test path is ADMIN
+even when disabled.
+
+### `KeycloakOidcLoginIntegrationTest` — 8 tests, real Keycloak + real HTTP
+
+A Keycloak 26.8.1 container importing the committed realm, the application on a random port, and a
+minimal HTTP client (`TestBrowser`) that submits Keycloak's real login form. Asserts each hop:
+authorization request parameters (`response_type=code`, client id, exact redirect URI, `openid`,
+`state`, `nonce`, `code_challenge`, `S256`); the callback; a session cookie that is HttpOnly,
+`SameSite=Lax`, `Path=/` and **different from the pre-login session id**; **no** CSRF cookie; a
+session response with the retailer and no token anywhere. Then: two retailers and an admin from real
+logins, isolation end to end; the session-bound CSRF token (`GET /api/auth/csrf` → `X-XSRF-TOKEN`),
+with a planted `XSRF-TOKEN` cookie and another session's token both refused; a spoofed
+`X-Forwarded-Host`/`Forwarded` that leaves the redirect and post-logout URIs on the real origin; logout through a
+form with the masked token → Keycloak end-session with `id_token_hint` and the exact post-logout URI →
+`/signed-out`, the old session id dead when replayed, and **a new login showing the form again**
+(SSO ended); `prompt=login` forcing re-authentication despite SSO, and other prompt values not
+forwarded; the unassigned retailer refused with no session; a tampered `state` and a **replayed code**
+both rejected. The test registers its random port's redirect URIs through Keycloak's admin API —
+exact URIs, as a deployment would — rather than relaxing the committed realm.
+
+### Existing API tests
+
+The pre-authentication API test classes run as ADMIN (`@WithParcelFlowUser`), the role whose view of
+the API is what they always assumed, and send CSRF tokens on POSTs. Their assertions are unchanged.
+
+### Frontend
+
+Vitest: `auth-session.spec` (restore after reload, shared request, unavailable vs signed out,
+login/return URL, logout form, expiry, open-redirect-safe return URLs), `auth-guards.spec`,
+`session-interceptor.spec` (401 → login with expired notice, one CSRF retry, no loop, genuine 403 left
+alone), `login-page.spec`, `app.spec` (role-based navigation, assigned retailer, sign-out form),
+`retailer-context.spec` (server-assigned for RETAILER), register-page and dashboard role behaviour.
+
+Playwright `e2e/auth.spec.ts`, real browser against nginx and Keycloak: return-URL after login, reload,
+no token in storage or script-readable cookies, role navigation and `/forbidden`, logout without
+automatic re-login, session expiry, the refused account and switching account, and two retailers in
+separate browser contexts (not found by URL, not found by lookup, duplicate with nothing to open,
+forged requests refused) plus the admin's cross-retailer view. The existing workflow and font specs
+sign in as ADMIN first.
+

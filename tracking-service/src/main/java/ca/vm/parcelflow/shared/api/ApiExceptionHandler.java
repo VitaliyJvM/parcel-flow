@@ -1,5 +1,6 @@
 package ca.vm.parcelflow.shared.api;
 
+import ca.vm.parcelflow.security.RetailerAccessDeniedException;
 import ca.vm.parcelflow.shipment.DuplicateTrackingNumberException;
 import ca.vm.parcelflow.shipment.ShipmentNotFoundException;
 import ca.vm.parcelflow.shipment.TrackingNumberNotFoundException;
@@ -18,6 +19,9 @@ import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.csrf.CsrfException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -68,13 +72,58 @@ public class ApiExceptionHandler {
         return problem;
     }
 
+    /**
+     * Echoes only the client's own input plus one boolean. Whose shipment it is, and its id, are
+     * never in the body: for a retailer colliding with another retailer's parcel that would be a
+     * disclosure, and for everyone else the UI resolves the id through the (access-checked) lookup.
+     */
     @ExceptionHandler(DuplicateTrackingNumberException.class)
     public ProblemDetail handleDuplicateTrackingNumber(DuplicateTrackingNumberException e) {
         ProblemDetail problem = problem(HttpStatus.CONFLICT, "Duplicate tracking number",
                 e.getMessage(), "duplicate-tracking-number");
         problem.setProperty("carrierCode", e.getCarrierCode().name());
         problem.setProperty("trackingNumber", e.getTrackingNumber());
+        problem.setProperty("existingShipmentAccessible", e.isExistingShipmentAccessible());
         return problem;
+    }
+
+    // --- Authentication and authorization ------------------------------------------------------
+    //
+    // Reached two ways: from controllers (method security, the retailer checks in the services)
+    // and from the security filter chain, whose API entry point and access-denied handler delegate
+    // here. The bodies say only which rule applied, never which resource or retailer was involved.
+
+    /** No authenticated session: never logged in, logged out, or the session expired. */
+    @ExceptionHandler(AuthenticationException.class)
+    public ProblemDetail handleUnauthenticated(AuthenticationException e) {
+        return problem(HttpStatus.UNAUTHORIZED, "Authentication required",
+                "Sign in to use this API", "authentication-required");
+    }
+
+    /**
+     * Missing, stale or forged CSRF token on a state-changing request. A distinct type so the UI can
+     * refresh its token and retry once, instead of telling the user they lack a permission.
+     */
+    @ExceptionHandler(CsrfException.class)
+    public ProblemDetail handleCsrf(CsrfException e) {
+        return problem(HttpStatus.FORBIDDEN, "Invalid CSRF token",
+                "The request was missing a valid CSRF token", "csrf-token-invalid");
+    }
+
+    @ExceptionHandler(RetailerAccessDeniedException.class)
+    public ProblemDetail handleRetailerAccessDenied(RetailerAccessDeniedException e) {
+        return problem(HttpStatus.FORBIDDEN, "Retailer access denied",
+                "You may act only for your own retailer", "retailer-access-denied");
+    }
+
+    /**
+     * Authenticated but not permitted: a RETAILER on an ADMIN endpoint. Without this handler the
+     * catch-all below would turn a method-security refusal into a 500.
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ProblemDetail handleAccessDenied(AccessDeniedException e) {
+        return problem(HttpStatus.FORBIDDEN, "Access denied",
+                "You do not have permission to perform this action", "access-denied");
     }
 
     @ExceptionHandler(FailedEventExceptions.NotFound.class)

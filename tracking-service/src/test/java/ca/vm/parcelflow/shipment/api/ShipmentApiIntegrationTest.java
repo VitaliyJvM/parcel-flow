@@ -3,12 +3,15 @@ package ca.vm.parcelflow.shipment.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ca.vm.parcelflow.security.ParcelFlowRole;
+import ca.vm.parcelflow.support.security.WithParcelFlowUser;
 import ca.vm.parcelflow.shipment.ShipmentRepository;
 import ca.vm.parcelflow.support.RedisIntegrationTest;
 import java.util.UUID;
@@ -29,6 +32,9 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+// Pre-dates authentication. ADMIN is the role whose view of the API is what these tests always
+// assumed: every retailer, plus the admin endpoints. Retailer isolation has its own tests.
+@WithParcelFlowUser(role = ParcelFlowRole.ADMIN)
 class ShipmentApiIntegrationTest extends RedisIntegrationTest {
 
     private static final MediaType PROBLEM_JSON = MediaType.APPLICATION_PROBLEM_JSON;
@@ -56,7 +62,7 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
                   "estimatedDeliveryDate": "2026-08-12"
                 }""";
 
-        String response = mockMvc.perform(post("/api/shipments")
+        String response = mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
@@ -81,7 +87,7 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
     @Test
     @DisplayName("the Location header of a created shipment resolves")
     void locationHeaderResolves() throws Exception {
-        String location = mockMvc.perform(post("/api/shipments")
+        String location = mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(registerBody("SP-LOCATION")))
                 .andExpect(status().isCreated())
@@ -97,12 +103,12 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
     @Test
     @DisplayName("registering the same tracking number for the same carrier returns 409")
     void rejectsDuplicateTrackingNumber() throws Exception {
-        mockMvc.perform(post("/api/shipments")
+        mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(registerBody("SP-DUPE")))
                 .andExpect(status().isCreated());
 
-        mockMvc.perform(post("/api/shipments")
+        mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(registerBody("SP-DUPE")))
                 .andExpect(status().isConflict())
@@ -126,7 +132,7 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
                   "carrierCode": "SWIFTPOST"
                 }""";
 
-        mockMvc.perform(post("/api/shipments")
+        mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest())
@@ -150,7 +156,7 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
                   "carrierCode": "NOT_A_CARRIER"
                 }""";
 
-        String response = mockMvc.perform(post("/api/shipments")
+        String response = mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest())
@@ -189,12 +195,12 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
     @DisplayName("retailer listing is scoped, paginated and newest-first")
     void listsRetailerShipments() throws Exception {
         for (int i = 1; i <= 3; i++) {
-            mockMvc.perform(post("/api/shipments")
+            mockMvc.perform(post("/api/shipments").with(csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(registerBody("SP-LIST-" + i)))
                     .andExpect(status().isCreated());
         }
-        mockMvc.perform(post("/api/shipments")
+        mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(registerBody("SP-OTHER", "retailer-2")))
                 .andExpect(status().isCreated());
@@ -221,7 +227,7 @@ class ShipmentApiIntegrationTest extends RedisIntegrationTest {
     @Test
     @DisplayName("the status filter narrows the retailer listing")
     void filtersRetailerShipmentsByStatus() throws Exception {
-        mockMvc.perform(post("/api/shipments")
+        mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(registerBody("SP-FILTER")))
                 .andExpect(status().isCreated());

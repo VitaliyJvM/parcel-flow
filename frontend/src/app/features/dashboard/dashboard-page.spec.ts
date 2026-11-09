@@ -2,6 +2,7 @@ import { HttpTestingController, TestRequest } from '@angular/common/http/testing
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { countPage, page, problem, provideTestHttp, shipment } from '../../../testing/http';
+import { signInAs } from '../../../testing/auth';
 import { RetailerContext } from '../../core/retailer/retailer-context';
 import { DashboardPage } from './dashboard-page';
 
@@ -14,6 +15,7 @@ describe('DashboardPage', () => {
       providers: [...provideTestHttp(), provideRouter([])],
     });
     localStorage.clear();
+    signInAs('ADMIN');
     TestBed.inject(RetailerContext).select('retailer-42');
     http = TestBed.inject(HttpTestingController);
     const fixture = TestBed.createComponent(DashboardPage);
@@ -106,5 +108,30 @@ describe('DashboardPage', () => {
     expect(el.querySelector('.pf-legend')?.textContent).toContain('Delivered');
     // And the Recent card reports the failure with its correlation id.
     expect(el.querySelector('pf-error-panel')?.textContent).toContain('Could not load shipments');
+  });
+});
+
+describe('DashboardPage (RETAILER)', () => {
+  it('never asks for failed events, which are ADMIN-only and span all retailers', async () => {
+    TestBed.configureTestingModule({
+      imports: [DashboardPage],
+      providers: [...provideTestHttp(), provideRouter([])],
+    });
+    localStorage.clear();
+    signInAs('RETAILER', 'alpha-goods');
+    const http = TestBed.inject(HttpTestingController);
+    const fixture = TestBed.createComponent(DashboardPage);
+    TestBed.tick();
+    for (let round = 0; round < 10; round++) {
+      const pending = http.match(() => true);
+      if (pending.length === 0) break;
+      for (const req of pending) {
+        expect(req.request.url).toBe('/api/retailers/alpha-goods/shipments');
+        req.flush(req.request.params.get('size') === '5' ? page([]) : countPage(0));
+      }
+      await fixture.whenStable();
+    }
+    expect((fixture.nativeElement as HTMLElement).querySelector('#failed-heading')).toBeNull();
+    http.verify();
   });
 });

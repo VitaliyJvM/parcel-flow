@@ -57,6 +57,23 @@ parcelflow:
     retry-max-backoff: 200ms
     shipment-cache-ttl: 1m
 
+  security:
+    # MockMvc and the real-OIDC test both speak plain HTTP to localhost.
+    require-https: false
+    oidc:
+      # Most tests authenticate with Spring Security Test's oidcLogin() and never contact an
+      # identity provider; the client registration is resolved lazily, so leaving the issuer unset
+      # simply means "login disabled". KeycloakOidcLoginIntegrationTest points these at a real
+      # Keycloak container.
+      client-secret: test-only-not-a-secret
+
+server:
+  servlet:
+    session:
+      cookie:
+        name: PARCELFLOW_SESSION
+        secure: false
+
 management:
   health:
     redis:

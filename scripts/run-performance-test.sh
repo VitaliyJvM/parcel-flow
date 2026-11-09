@@ -595,6 +595,82 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# Sign in (the API requires an authenticated session and a CSRF token)
+# -----------------------------------------------------------------------------
+#
+# The k6 container cannot run the OIDC login (Keycloak's browser-facing URL is localhost on the
+# host), so the host signs in as the local ADMIN with the real authorization code flow, fetches
+# that session's CSRF token, and hands both to k6. The password comes from the environment or,
+# failing that, from .env — parsed for that one key, never sourced.
+#
+# Nothing secret goes on a command line or into a container's environment: the password reaches
+# curl on stdin (scripts/oidc-login.sh), the session lives in a 0600 cookie jar, and k6 reads the
+# session and CSRF token from a 0600 file in a private 0700 directory mounted read-only — not from
+# `-e` variables, which `ps` and `docker inspect` would show. The container runs as this user so it
+# can read that file. On exit, success or failure, the session is signed out (POST /logout) and
+# both files are deleted.
+
+if [[ -z "${PARCELFLOW_ADMIN_PASSWORD:-}" && -f "${PROJECT_ROOT}/.env" ]]; then
+  PARCELFLOW_ADMIN_PASSWORD="$(grep -E '^PARCELFLOW_ADMIN_PASSWORD=' "${PROJECT_ROOT}/.env" | tail -1 | cut -d= -f2-)"
+fi
+[[ -n "${PARCELFLOW_ADMIN_PASSWORD:-}" ]] || fail "PARCELFLOW_ADMIN_PASSWORD is not set; run ./scripts/init-local-secrets.sh"
+export PARCELFLOW_ADMIN_PASSWORD
+
+SESSION_JAR=""
+CREDENTIALS_DIR=""
+K6_CREDENTIALS_MOUNT="/run/parcelflow-credentials"
+
+# Prints the session's (masked) CSRF token, or nothing.
+session_csrf_token() {
+  curl -sS --max-time 10 -b "${SESSION_JAR}" -c "${SESSION_JAR}" "${HOST_BASE_URL}/api/auth/csrf" 2>/dev/null \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
+}
+
+# Ends the load-test session on the server, then removes every local copy of it. Runs on any exit.
+cleanup_session() {
+  local token status
+  if [[ -n "${SESSION_JAR}" && -s "${SESSION_JAR}" ]]; then
+    token="$(session_csrf_token || true)"
+    if [[ -n "${token}" ]]; then
+      # The CSRF token goes through stdin too: printf is a builtin, so it is never an argument.
+      status="$(printf '%s' "${token}" | curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+        -b "${SESSION_JAR}" -c "${SESSION_JAR}" --data-urlencode "_csrf@-" "${HOST_BASE_URL}/logout" 2>/dev/null || true)"
+    fi
+    if [[ "${status:-}" == "302" ]]; then
+      log "Signed the load-test ADMIN session out"
+    else
+      warn "Could not sign the load-test ADMIN session out (HTTP ${status:-none}); it expires after 30 minutes idle"
+    fi
+  fi
+  [[ -n "${SESSION_JAR}" ]] && rm -f "${SESSION_JAR}"
+  [[ -n "${CREDENTIALS_DIR}" ]] && rm -rf "${CREDENTIALS_DIR}"
+  return 0
+}
+trap cleanup_session EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+log "Signing in as ops.admin through Keycloak"
+SESSION_JAR="$(mktemp)"
+chmod 600 "${SESSION_JAR}"
+"${PROJECT_ROOT}/scripts/oidc-login.sh" "${HOST_BASE_URL}" ops.admin PARCELFLOW_ADMIN_PASSWORD "${SESSION_JAR}" >/dev/null \
+  || fail "Could not sign in; is Keycloak up (docker compose ps keycloak)?"
+K6_SESSION_COOKIE_NAME="PARCELFLOW_SESSION"
+K6_SESSION="$(awk -v name="${K6_SESSION_COOKIE_NAME}" '$6==name{print $7}' "${SESSION_JAR}")"
+K6_CSRF_TOKEN="$(session_csrf_token)"
+[[ -n "${K6_SESSION}" && -n "${K6_CSRF_TOKEN}" ]] || fail "Signed in, but got no session cookie or CSRF token"
+
+CREDENTIALS_DIR="$(mktemp -d)"
+chmod 700 "${CREDENTIALS_DIR}"
+(
+  umask 077
+  printf '{"cookieName":"%s","session":"%s","csrfToken":"%s"}\n' \
+    "${K6_SESSION_COOKIE_NAME}" "${K6_SESSION}" "${K6_CSRF_TOKEN}" > "${CREDENTIALS_DIR}/session.json"
+)
+unset K6_SESSION K6_CSRF_TOKEN
+K6_USER="$(id -u):$(id -g)"
+
+# -----------------------------------------------------------------------------
 # Run k6
 # -----------------------------------------------------------------------------
 
@@ -619,8 +695,11 @@ if compose_service_exists "${K6_SERVICE}"; then
     -e EVENTS_PER_REQUEST="${EVENTS_PER_REQUEST}" \
     -e DUPLICATE_PERCENTAGE="${DUPLICATE_PERCENTAGE}" \
     -e OUT_OF_ORDER_PERCENTAGE="${OUT_OF_ORDER_PERCENTAGE}" \
+    -e PARCELFLOW_CREDENTIALS_FILE="${K6_CREDENTIALS_MOUNT}/session.json" \
+    -v "${CREDENTIALS_DIR}:${K6_CREDENTIALS_MOUNT}:ro" \
     -v "${PROJECT_ROOT}/performance/k6:/scripts:ro" \
     -v "${RESULTS_PATH}:/results" \
+    --user "${K6_USER}" \
     "${K6_SERVICE}" \
     run \
     --summary-trend-stats="avg,min,med,max,p(90),p(95),p(99)" \
@@ -642,8 +721,11 @@ else
     -e EVENTS_PER_REQUEST="${EVENTS_PER_REQUEST}" \
     -e DUPLICATE_PERCENTAGE="${DUPLICATE_PERCENTAGE}" \
     -e OUT_OF_ORDER_PERCENTAGE="${OUT_OF_ORDER_PERCENTAGE}" \
+    -e PARCELFLOW_CREDENTIALS_FILE="${K6_CREDENTIALS_MOUNT}/session.json" \
+    -v "${CREDENTIALS_DIR}:${K6_CREDENTIALS_MOUNT}:ro" \
     -v "${PROJECT_ROOT}/performance/k6:/scripts:ro" \
     -v "${RESULTS_PATH}:/results" \
+    --user "${K6_USER}" \
     "${K6_IMAGE}" \
     run \
     --summary-trend-stats="avg,min,med,max,p(90),p(95),p(99)" \

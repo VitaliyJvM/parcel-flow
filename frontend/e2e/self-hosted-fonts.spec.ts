@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { ADMIN, csrfHeaders, signIn } from './support/auth';
 
 /**
  * Fonts are self-hosted. With Google Fonts blocked outright, every page must still load Roboto and
@@ -43,8 +44,11 @@ for (const viewport of VIEWPORTS) {
   test.describe(`self-hosted fonts (${viewport.name})`, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
 
-    test('icons and typography render with Google Fonts blocked', async ({ page, request, baseURL }) => {
+    test('icons and typography render with Google Fonts blocked', async ({ page, baseURL }) => {
       const origin = new URL(baseURL ?? 'http://127.0.0.1').origin;
+      // Signed in before any listener is attached: the Keycloak login page is Keycloak's origin
+      // and its own assets, not this application's, and is not what this test is about.
+      await signIn(page, ADMIN);
       const blocked: string[] = [];
       const fontUrls: string[] = [];
       const consoleErrors: string[] = [];
@@ -62,7 +66,8 @@ for (const viewport of VIEWPORTS) {
       page.on('pageerror', (e) => consoleErrors.push(e.message));
 
       // A shipment to open on the details page.
-      const created = await request.post('/api/shipments', {
+      const created = await page.request.post('/api/shipments', {
+        headers: await csrfHeaders(page),
         data: {
           retailerId: RETAILER,
           customerId: 'cust-fonts',

@@ -513,7 +513,8 @@ when the producer stops pacing itself. Genuine optimistic-lock contention is cov
 - Multiple consumer instances and a rebalance test.
 - A schema registry, which would remove the hand-maintained duplicate contract.
 - Bulk replay from the DLT; today retry is one event at a time.
-- Authentication on `/api/admin/**`.
+- OIDC back-channel logout, and production-grade Keycloak (the browser login, roles and retailer
+  isolation are in place — see [security.md](security.md)).
 - A trace backend. Trace context is created and propagated across the HTTP and Kafka boundaries and
   appears in the logs; no exporter is configured, so spans are dropped.
 

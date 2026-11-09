@@ -2,6 +2,7 @@ import { HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { page, problem, provideTestHttp, shipment } from '../../../testing/http';
+import { signInAs } from '../../../testing/auth';
 import { RetailerContext } from '../../core/retailer/retailer-context';
 import { parseListQuery } from './list-query';
 import { ShipmentListPage } from './shipment-list-page';
@@ -26,6 +27,7 @@ describe('ShipmentListPage', () => {
       providers: [...provideTestHttp(), provideRouter([])],
     });
     localStorage.clear();
+    signInAs('ADMIN');
     TestBed.inject(RetailerContext).select('retailer-42');
     http = TestBed.inject(HttpTestingController);
     const fixture = TestBed.createComponent(ShipmentListPage);

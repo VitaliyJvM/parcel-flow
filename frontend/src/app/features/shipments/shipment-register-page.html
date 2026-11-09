@@ -22,16 +22,27 @@
       <mat-icon aria-hidden="true">content_copy</mat-icon>
       <div class="pf-callout-body">
         <strong>Already registered</strong>
-        <p>
-          Tracking number <code>{{ d.trackingNumber }}</code> is already registered for
-          {{ carrierMeta[d.carrierCode].label }}. A tracking number is unique per carrier, so either
-          open the existing shipment, or use a different number or carrier.
-        </p>
+        @if (d.accessible) {
+          <p>
+            Tracking number <code>{{ d.trackingNumber }}</code> is already registered for
+            {{ carrierMeta[d.carrierCode].label }}. A tracking number is unique per carrier, so either
+            open the existing shipment, or use a different number or carrier.
+          </p>
+        } @else {
+          <p data-testid="duplicate-not-accessible">
+            Tracking number <code>{{ d.trackingNumber }}</code> cannot be registered for
+            {{ carrierMeta[d.carrierCode].label }}: it is already in use, and not by a shipment you can
+            view. Tracking numbers are unique per carrier across all retailers. Check the number with
+            the carrier.
+          </p>
+        }
       </div>
-      <button mat-stroked-button type="button" (click)="openExisting()" [disabled]="openingExisting()">
-        <mat-icon aria-hidden="true">arrow_forward</mat-icon>
-        Open existing shipment
-      </button>
+      @if (d.accessible) {
+        <button mat-stroked-button type="button" (click)="openExisting()" [disabled]="openingExisting()">
+          <mat-icon aria-hidden="true">arrow_forward</mat-icon>
+          Open existing shipment
+        </button>
+      }
     </div>
   }
 
@@ -39,7 +50,11 @@
     <mat-form-field>
       <mat-label>Retailer ID</mat-label>
       <input matInput formControlName="retailerId" [maxlength]="limits.retailerId" autocomplete="off" required />
-      <mat-hint align="end">{{ form.controls.retailerId.value.length }}/{{ limits.retailerId }}</mat-hint>
+      @if (session.isRetailer()) {
+        <mat-hint>Assigned to your account. You can register shipments only for this retailer.</mat-hint>
+      } @else {
+        <mat-hint align="end">{{ form.controls.retailerId.value.length }}/{{ limits.retailerId }}</mat-hint>
+      }
       @if (form.controls.retailerId.hasError('required') || form.controls.retailerId.hasError('blank')) {
         <mat-error>Retailer ID is required.</mat-error>
       } @else if (form.controls.retailerId.hasError('server')) {

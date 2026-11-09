@@ -1,6 +1,7 @@
 package ca.vm.parcelflow.tracking;
 
-import ca.vm.parcelflow.shipment.ShipmentService;
+import ca.vm.parcelflow.security.CurrentUser;
+import ca.vm.parcelflow.shipment.ShipmentAccessService;
 import ca.vm.parcelflow.tracking.domain.TrackingEvent;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -25,22 +26,22 @@ public class TrackingHistoryService {
             Sort.by(Sort.Order.asc("eventTime"), Sort.Order.asc("sequenceNumber"));
 
     private final TrackingEventRepository trackingEventRepository;
-    private final ShipmentService shipmentService;
+    private final ShipmentAccessService shipmentAccess;
 
     public TrackingHistoryService(
-            TrackingEventRepository trackingEventRepository, ShipmentService shipmentService) {
+            TrackingEventRepository trackingEventRepository, ShipmentAccessService shipmentAccess) {
         this.trackingEventRepository = trackingEventRepository;
-        this.shipmentService = shipmentService;
+        this.shipmentAccess = shipmentAccess;
     }
 
     /**
-     * @throws ca.vm.parcelflow.shipment.ShipmentNotFoundException if the shipment does not exist,
-     *     so an unknown parcel is a 404 rather than an empty page that looks like a parcel with no
-     *     scans yet
+     * @throws ca.vm.parcelflow.shipment.ShipmentNotFoundException if the shipment does not exist
+     *     or is not the viewer's, so an unknown parcel is a 404 rather than an empty page that looks
+     *     like a parcel with no scans yet — and another retailer's parcel looks exactly the same
      */
     @Transactional(readOnly = true)
-    public Page<TrackingEvent> findShipmentHistory(UUID shipmentId, int page, int size) {
-        shipmentService.requireShipmentExists(shipmentId);
+    public Page<TrackingEvent> findShipmentHistory(CurrentUser viewer, UUID shipmentId, int page, int size) {
+        shipmentAccess.requireAccessible(viewer, shipmentId);
         return trackingEventRepository.findByShipmentId(
                 shipmentId, PageRequest.of(page, size, CHRONOLOGICAL));
     }

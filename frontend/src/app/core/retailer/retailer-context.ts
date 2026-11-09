@@ -1,4 +1,5 @@
-import { computed, Injectable, signal } from '@angular/core';
+import { computed, inject, Injectable, signal } from '@angular/core';
+import { AuthSession } from '../auth/auth-session';
 
 const STORAGE_KEY = 'parcelflow.retailer';
 const RECENT_KEY = 'parcelflow.retailer.recent';
@@ -9,33 +10,47 @@ export const RETAILER_ID_MAX_LENGTH = 64;
 /**
  * The retailer the UI is currently scoped to.
  *
- * This is a *view filter*, not an identity. The backend has no authentication, so anyone can read
- * any retailer's shipments by changing the path; selecting a retailer here only decides which
- * list the UI asks for. Persisted in localStorage purely as a convenience; every access is
- * guarded because storage can be unavailable (private windows, blocked site data).
+ * - **RETAILER**: always the retailer the server assigned to the signed-in user
+ *   (`AuthSession.retailerId()`). It cannot be changed here, and nothing the UI sends could widen
+ *   it: the backend checks every request against its own copy of the assignment.
+ * - **ADMIN**: a view filter the admin chooses, because an admin may act for any retailer. The
+ *   choice is remembered in localStorage purely as a convenience — it is a retailer id, not a
+ *   credential — and every access is guarded because storage can be unavailable.
  */
 @Injectable({ providedIn: 'root' })
 export class RetailerContext {
-  private readonly current = signal<string | null>(readString(STORAGE_KEY));
+  private readonly session = inject(AuthSession);
+  private readonly selected = signal<string | null>(readString(STORAGE_KEY));
   private readonly recentIds = signal<readonly string[]>(readList(RECENT_KEY));
 
-  readonly retailerId = this.current.asReadonly();
-  readonly recent = this.recentIds.asReadonly();
-  readonly hasRetailer = computed(() => this.current() !== null);
+  /** Whether the signed-in user may choose a retailer (ADMIN only). */
+  readonly canSelect = computed(() => this.session.isAdmin());
 
+  readonly retailerId = computed<string | null>(() => {
+    if (this.session.isRetailer()) {
+      return this.session.retailerId();
+    }
+    return this.session.isAdmin() ? this.selected() : null;
+  });
+  readonly recent = this.recentIds.asReadonly();
+  readonly hasRetailer = computed(() => this.retailerId() !== null);
+
+  /** ADMIN only; ignored for anyone else. */
   select(retailerId: string): void {
     const value = normalizeRetailerId(retailerId);
-    if (value === null) {
+    if (value === null || !this.canSelect()) {
       return;
     }
-    this.current.set(value);
-    this.recentIds.update((ids) => [value, ...ids.filter((id) => id !== value)].slice(0, MAX_RECENT));
+    this.selected.set(value);
+    this.recentIds.update((ids) =>
+      [value, ...ids.filter((id) => id !== value)].slice(0, MAX_RECENT),
+    );
     write(STORAGE_KEY, value);
     write(RECENT_KEY, JSON.stringify(this.recentIds()));
   }
 
   clear(): void {
-    this.current.set(null);
+    this.selected.set(null);
     remove(STORAGE_KEY);
   }
 }

@@ -20,6 +20,10 @@ export type ProblemSlug =
   | 'malformed-request'
   | 'not-found'
   | 'internal-error'
+  | 'authentication-required'
+  | 'csrf-token-invalid'
+  | 'access-denied'
+  | 'retailer-access-denied'
   | (string & {});
 
 /** Shape of an RFC 9457 problem document as this backend produces it. */
@@ -156,6 +160,8 @@ function sanitizeErrors(errors: unknown): Record<string, string> {
 }
 
 function defaultTitle(status: number): string {
+  if (status === 401) return 'Sign-in required';
+  if (status === 403) return 'Not permitted';
   if (status === 404) return 'Not found';
   if (status === 409) return 'Conflict';
   if (status >= 500) return 'Server error';
@@ -169,6 +175,12 @@ function defaultDetail(status: number): string {
   }
   if (status >= 500) {
     return 'The tracking service could not process the request.';
+  }
+  if (status === 401) {
+    return 'Your session has ended. Sign in again to continue.';
+  }
+  if (status === 403) {
+    return 'Your account is not permitted to do this.';
   }
   return 'The request was rejected.';
 }

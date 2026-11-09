@@ -8,6 +8,14 @@ Sibling documents: [troubleshooting.md](troubleshooting.md) for specific failure
 
 ---
 
+
+> **API calls need a session.** The commands below that call `/api/**` (and `/actuator/health` for
+> component details) use a cookie jar from a real OIDC login: run
+> `scripts/oidc-login.sh http://localhost:8080 ops.admin PARCELFLOW_ADMIN_PASSWORD /tmp/pf.jar` with
+> `.env` exported, then `export PF_JAR=/tmp/pf.jar PF_XSRF="$(curl -s -b /tmp/pf.jar http://localhost:8080/api/auth/csrf | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"`.
+> See [security.md §11](security.md#11-calling-the-api-from-a-terminal). Login problems are in
+> [security.md §9](security.md#9-hostnames-redirects-and-docker).
+
 ## 1. The local stack
 
 ```bash
@@ -340,7 +348,7 @@ Common setup for all of them:
 
 ```bash
 docker compose up -d --build
-ID=$(curl -s -X POST http://localhost:8080/api/shipments \
+ID=$(curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -s -X POST http://localhost:8080/api/shipments \
   -H 'Content-Type: application/json' \
   -d '{"retailerId":"r","customerId":"c","trackingNumber":"SP-CHAOS-1","carrierCode":"SWIFTPOST"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["shipmentId"])')
@@ -376,7 +384,7 @@ uninterrupted run.
 **Consistency check.**
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
   | python3 -c 'import sys,json;e=json.load(sys.stdin)["content"];ids=[x["eventId"] for x in e];print("events",len(ids),"unique",len(set(ids)))'
 ```
 
@@ -388,7 +396,7 @@ curl -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
 docker compose stop redis
 curl -s -o /dev/null -w 'readiness %{http_code}\n' http://localhost:8080/actuator/health/readiness
 curl -s -o /dev/null -w 'health    %{http_code}\n' http://localhost:8080/actuator/health
-curl -s http://localhost:8080/api/shipments/$ID | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID | python3 -m json.tool
 docker compose run --rm carrier-simulator --shipment-id=$ID --tracking-number=SP-CHAOS-1 \
   --carrier=SWIFTPOST --scenario=NORMAL --delay-ms=100
 docker compose start redis
@@ -454,7 +462,7 @@ docker compose exec postgres psql -U parcelflow -d parcelflow -c "
 
 ```bash
 docker compose stop redpanda
-curl -s http://localhost:8080/actuator/health/readiness | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/actuator/health/readiness | python3 -m json.tool
 curl -s -o /dev/null -w 'API read %{http_code}\n' http://localhost:8080/api/shipments/$ID
 docker compose start redpanda
 ```
@@ -500,7 +508,7 @@ No stack trace, and no payload.
 **Recovery.**
 
 ```bash
-curl -s 'http://localhost:8080/api/admin/failed-events?status=FAILED' | python3 -m json.tool
+curl -b "$PF_JAR" -s 'http://localhost:8080/api/admin/failed-events?status=FAILED' | python3 -m json.tool
 docker compose exec redpanda rpk topic consume carrier-tracking-events-dlt -n 2 --offset start
 ```
 
@@ -529,9 +537,9 @@ not a failure path.
 **Consistency check.**
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print("stored",d["totalElements"])'
-curl -s "http://localhost:8080/api/shipments/$ID/notifications" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$ID/notifications" \
   | python3 -c 'import sys,json;print("notifications",json.load(sys.stdin)["totalElements"])'
 ```
 
@@ -564,15 +572,15 @@ are unique by `event_id`. A lost update would show as a version lower than the a
 **Work the failed-event queue.**
 
 ```bash
-curl -s 'http://localhost:8080/api/admin/failed-events?status=FAILED&size=50' | python3 -m json.tool
-curl -s http://localhost:8080/api/admin/failed-events/<id> | python3 -m json.tool
-curl -s -X POST http://localhost:8080/api/admin/failed-events/<id>/retry | python3 -m json.tool
+curl -b "$PF_JAR" -s 'http://localhost:8080/api/admin/failed-events?status=FAILED&size=50' | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/api/admin/failed-events/<id> | python3 -m json.tool
+curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -s -X POST http://localhost:8080/api/admin/failed-events/<id>/retry | python3 -m json.tool
 ```
 
 Only categories that could plausibly succeed on a retry are accepted; the rest return 409 with the
 category, which is the API saying "fix the producer, not the button". `/api/admin/**` is
-unauthenticated in this build — it exposes cross-retailer failure detail and can trigger
-reprocessing — and would need an operator role and a private network in a real deployment.
+ADMIN only (and the retry needs a CSRF token): it exposes cross-retailer failure detail and can
+trigger reprocessing. A real deployment would also keep it on a private network.
 
 **Inspect the dead letter topic.**
 
@@ -605,7 +613,9 @@ Not done here, and not pretended to be. Listed because knowing the gap is part o
 system:
 
 * **Management on its own port**, not routed publicly, and actuator behind network policy.
-* **`/api/admin/**` behind authentication** and an operator role.
+* **Production identity provider** (Keycloak in production mode with a database and TLS) and a
+  shared session store or sticky sessions before running more than one instance — see
+  [security.md](security.md#14-towards-a-distributed-deployment).
 * **Alertmanager**, with routing, silences and an on-call rotation. Rules without a receiver are
   documentation.
 * **A trace backend** — an OTLP exporter and Tempo or Jaeger — and sampling well below 100%.

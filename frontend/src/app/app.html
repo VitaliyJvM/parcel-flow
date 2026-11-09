@@ -1,77 +1,125 @@
-<a class="pf-skip-link" href="#main">Skip to content</a>
+@if (session.status() === 'unknown') {
+  <mat-progress-bar
+    class="pf-session-loading"
+    mode="indeterminate"
+    aria-label="Checking your session"
+  />
+}
 
-<mat-toolbar class="pf-toolbar">
-  @if (isHandset()) {
-    <button mat-icon-button type="button" aria-label="Toggle navigation" (click)="sidenav.toggle()">
-      <mat-icon aria-hidden="true">menu</mat-icon>
-    </button>
-  }
-  <a routerLink="/dashboard" class="pf-brand">
-    <mat-icon aria-hidden="true">deployed_code</mat-icon>
-    <span>ParcelFlow</span>
-  </a>
-  <span class="pf-spacer"></span>
-  <!-- A view filter, not a login: labelled "Retailer", never "Signed in as". -->
-  <button
-    mat-stroked-button
-    type="button"
-    class="pf-retailer-button"
-    (click)="void retailerDialog.open()"
-    [attr.aria-label]="
-      retailer.retailerId()
-        ? 'Retailer: ' + retailer.retailerId() + '. Change retailer'
-        : 'Select retailer'
-    "
-  >
-    <mat-icon aria-hidden="true">storefront</mat-icon>
-    @if (retailer.retailerId(); as retailerId) {
-      <span class="pf-retailer-caption">Retailer</span>
-      <span class="pf-retailer-label">{{ retailerId }}</span>
-    } @else {
-      <span class="pf-retailer-label">Select retailer</span>
+@if (session.isAuthenticated()) {
+  <a class="pf-skip-link" href="#main">Skip to content</a>
+
+  <mat-toolbar class="pf-toolbar">
+    @if (isHandset()) {
+      <button
+        mat-icon-button
+        type="button"
+        aria-label="Toggle navigation"
+        (click)="sidenav.toggle()"
+      >
+        <mat-icon aria-hidden="true">menu</mat-icon>
+      </button>
     }
-  </button>
-</mat-toolbar>
+    <a routerLink="/dashboard" class="pf-brand">
+      <mat-icon aria-hidden="true">deployed_code</mat-icon>
+      <span>ParcelFlow</span>
+    </a>
+    <span class="pf-spacer"></span>
 
-<div class="pf-demo-banner" role="note">
-  <mat-icon aria-hidden="true">shield</mat-icon>
-  <span>
-    <strong>Local demo — no authentication.</strong>
-    <span class="pf-banner-extra"> Every API endpoint, including admin retry, is open.</span>
-  </span>
-  <a routerLink="/about">What this means</a>
-</div>
+    @if (retailer.canSelect()) {
+      <!-- ADMIN: a view filter over every retailer, so it is a button. -->
+      <button
+        mat-stroked-button
+        type="button"
+        class="pf-retailer-button"
+        (click)="void retailerDialog.open()"
+        [attr.aria-label]="
+          retailer.retailerId()
+            ? 'Retailer: ' + retailer.retailerId() + '. Change retailer'
+            : 'Select retailer'
+        "
+      >
+        <mat-icon aria-hidden="true">storefront</mat-icon>
+        @if (retailer.retailerId(); as retailerId) {
+          <span class="pf-retailer-caption">Retailer</span>
+          <span class="pf-retailer-label">{{ retailerId }}</span>
+        } @else {
+          <span class="pf-retailer-label">Select retailer</span>
+        }
+      </button>
+    } @else if (retailer.retailerId(); as retailerId) {
+      <!-- RETAILER: assigned by the identity provider; not something this UI can change. -->
+      <span
+        class="pf-retailer-fixed"
+        data-testid="assigned-retailer"
+        [attr.aria-label]="'Retailer: ' + retailerId + ' (assigned to your account)'"
+        matTooltip="Assigned to your account by an administrator"
+      >
+        <mat-icon aria-hidden="true">storefront</mat-icon>
+        <span class="pf-retailer-caption">Retailer</span>
+        <span class="pf-retailer-label">{{ retailerId }}</span>
+      </span>
+    }
 
-<mat-sidenav-container class="pf-container">
-  <mat-sidenav
-    #sidenav
-    [mode]="sidenavMode()"
-    [opened]="!isHandset()"
-    class="pf-sidenav"
-    aria-label="Main navigation"
-  >
-    <mat-nav-list>
-      @for (item of nav; track item.path) {
-        <a
-          mat-list-item
-          [routerLink]="item.path"
-          routerLinkActive
-          #rla="routerLinkActive"
-          [routerLinkActiveOptions]="{ exact: item.exact ?? false }"
-          [activated]="rla.isActive"
-          [attr.aria-current]="rla.isActive ? 'page' : null"
-          (click)="closeOnHandset()"
-        >
-          <mat-icon matListItemIcon aria-hidden="true">{{ item.icon }}</mat-icon>
-          <span matListItemTitle>{{ item.label }}</span>
-        </a>
-      }
-    </mat-nav-list>
-  </mat-sidenav>
+    @if (session.user(); as user) {
+      <button
+        mat-button
+        type="button"
+        class="pf-user-button"
+        [matMenuTriggerFor]="userMenu"
+        [attr.aria-label]="'Signed in as ' + user.displayName + ', ' + user.role + '. Account menu'"
+        data-testid="user-menu"
+      >
+        <mat-icon aria-hidden="true">account_circle</mat-icon>
+        <span class="pf-user-name">{{ user.displayName }}</span>
+        <span class="pf-role-chip" data-testid="user-role">{{ user.role }}</span>
+      </button>
+      <mat-menu #userMenu="matMenu" xPosition="before">
+        <div class="pf-user-summary" mat-menu-item disabled>
+          <span>{{ user.username }}</span>
+        </div>
+        <button mat-menu-item type="button" (click)="void signOut()" [disabled]="signingOut()">
+          <mat-icon aria-hidden="true">logout</mat-icon>
+          <span>Sign out</span>
+        </button>
+      </mat-menu>
+    }
+  </mat-toolbar>
 
-  <mat-sidenav-content>
-    <main id="main" class="pf-main" tabindex="-1">
-      <router-outlet />
-    </main>
-  </mat-sidenav-content>
-</mat-sidenav-container>
+  <mat-sidenav-container class="pf-container">
+    <mat-sidenav
+      #sidenav
+      [mode]="sidenavMode()"
+      [opened]="!isHandset()"
+      class="pf-sidenav"
+      aria-label="Main navigation"
+    >
+      <mat-nav-list>
+        @for (item of nav(); track item.path) {
+          <a
+            mat-list-item
+            [routerLink]="item.path"
+            routerLinkActive
+            #rla="routerLinkActive"
+            [routerLinkActiveOptions]="{ exact: item.exact ?? false }"
+            [activated]="rla.isActive"
+            [attr.aria-current]="rla.isActive ? 'page' : null"
+            (click)="closeOnHandset()"
+          >
+            <mat-icon matListItemIcon aria-hidden="true">{{ item.icon }}</mat-icon>
+            <span matListItemTitle>{{ item.label }}</span>
+          </a>
+        }
+      </mat-nav-list>
+    </mat-sidenav>
+
+    <mat-sidenav-content>
+      <main id="main" class="pf-main" tabindex="-1">
+        <router-outlet />
+      </main>
+    </mat-sidenav-content>
+  </mat-sidenav-container>
+} @else {
+  <!-- Login, signed-out, and the brief moment before the session is known: no shell. -->
+  <router-outlet />
+}

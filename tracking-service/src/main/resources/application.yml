@@ -142,9 +142,73 @@ parcelflow:
     # genuinely correct without Redis, running it that way must work.
     enabled: true
 
+  security:
+    # Production-safe defaults. The `local` profile (application-local.yml) relaxes what plain HTTP
+    # on localhost cannot satisfy, and nothing more.
+    require-https: true
+    session:
+      # Ends an authenticated session after this long without user activity. Background polling
+      # (requests the UI marks X-ParcelFlow-Background) does not count. Same value as Tomcat's own
+      # idle timeout below, which still applies to sessions that see no requests at all.
+      idle-timeout: ${PARCELFLOW_SESSION_IDLE_TIMEOUT:30m}
+      # Ends an authenticated session this long after login, however active. The upper bound on how
+      # long a Keycloak-side change (user disabled, role or retailer changed, SSO session ended)
+      # takes to reach an existing ParcelFlow session: there is no back-channel logout.
+      absolute-timeout: ${PARCELFLOW_SESSION_ABSOLUTE_TIMEOUT:8h}
+    oidc:
+      registration-id: keycloak
+      # The issuer exactly as Keycloak publishes it and the browser reaches it. Every ID token's
+      # `iss` must equal this string. No default: without it login is disabled (fails closed).
+      issuer-uri: ${PARCELFLOW_OIDC_ISSUER_URI:}
+      # Only when this service reaches Keycloak by another network path than the browser does
+      # (Docker Compose). Changes where metadata is fetched from, never which issuer is accepted.
+      discovery-uri: ${PARCELFLOW_OIDC_DISCOVERY_URI:}
+      client-id: ${PARCELFLOW_OIDC_CLIENT_ID:parcelflow-bff}
+      # Never in this file: it is packaged into the jar. Compose passes it from `.env`.
+      client-secret: ${PARCELFLOW_OIDC_CLIENT_SECRET:}
+      post-logout-redirect-path: /signed-out
+
 server:
   port: 8080
   shutdown: graceful
+  # Behind nginx (or any TLS-terminating proxy) the browser-facing scheme, host and port come from
+  # X-Forwarded-Proto / -Port and the Host header. Spring Security needs them to build the OIDC
+  # redirect_uri and the post-logout redirect: get them wrong and Keycloak rejects the login.
+  # `native` is Tomcat's RemoteIpValve, which honours these headers only from internal-network
+  # proxy addresses.
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      # X-Forwarded-Host is ignored: the host comes from the Host header, which every supported
+      # proxy forwards (nginx: `Host $http_host`; the Angular dev server: unchanged). A trusted
+      # proxy that passes a client's X-Forwarded-Host through unmodified would otherwise let the
+      # client choose the host of the OIDC redirect_uri. (Tomcat reads the header named here; an
+      # empty name matches no header.) X-Forwarded-Proto and -Port stay trusted from internal
+      # proxies, which nginx always overwrites. A deployment that exposes this port to anything but
+      # its proxy must also narrow `internal-proxies` (see docs/security.md).
+      host-header: ""
+  servlet:
+    session:
+      # Idle timeout of the browser session (and with it the server-side OAuth tokens). Matches the
+      # Keycloak realm's SSO idle timeout, so neither side outlives the other by much. Counts every
+      # request, including background polling; parcelflow.security.session adds an activity-aware
+      # idle timeout and an absolute lifetime on top.
+      timeout: 30m
+      # Never put the session id in a URL (;jsessionid=...).
+      tracking-modes: cookie
+      cookie:
+        # The __Host- prefix makes the browser refuse the cookie unless it is Secure, host-only
+        # (no Domain) and Path=/. It cannot be set or overwritten by a sibling subdomain.
+        # application-local.yml renames it for plain-HTTP localhost, where __Host- cannot work.
+        name: __Host-parcelflow-session
+        http-only: true
+        secure: true
+        # Lax, not Strict: the OIDC callback is a top-level GET navigation arriving from the
+        # identity provider's origin, and the session cookie must accompany it so Spring can match
+        # the response to the stored authorization request (state, nonce, PKCE verifier). Lax still
+        # withholds the cookie from cross-site POSTs and subresource requests; CSRF tokens cover
+        # the rest.
+        same-site: lax
 
 management:
   endpoints:
@@ -166,7 +230,10 @@ management:
       # Health details name the datasource, the broker's cluster id and the Redis version. Useful
       # locally, and reconnaissance if this port were reachable from outside — which is the
       # deployment decision documented in docs/operations.md, not something this file can fix.
-      show-details: always
+      # Components (datasource, broker cluster id, Redis version) only for an ADMIN session.
+      # Everyone else, including the Compose health check, gets the overall status.
+      show-details: when-authorized
+      roles: ADMIN
       group:
         # The readiness policy, stated in one place:
         #

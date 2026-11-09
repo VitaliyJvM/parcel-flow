@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { ADMIN, signIn } from './support/auth';
 import { runSimulator } from './support/simulator';
 
 /**
@@ -14,6 +15,9 @@ import { runSimulator } from './support/simulator';
  *
  * Identifiers are unique per run (the database and Kafka persist between runs); everything else —
  * scenario, carrier, seeds relative to the run, expected counts — is fixed.
+ *
+ * Runs as the local ADMIN (a real Keycloak login before every test): the operator view, with the
+ * retailer picker, failed events and the simulator. Retailer isolation is auth.spec.ts.
  */
 
 const RUN = Date.now();
@@ -63,6 +67,10 @@ async function lookUp(page: Page, carrierLabel: string, trackingNumber: string) 
 
 test.describe.serial('shipment workflow against the real stack', () => {
   let shipmentId = '';
+
+  test.beforeEach(async ({ page }) => {
+    await signIn(page, ADMIN);
+  });
 
   test('register, simulate, observe status, SUPERSEDED events and notifications', async ({ page }) => {
     await page.goto('/dashboard');

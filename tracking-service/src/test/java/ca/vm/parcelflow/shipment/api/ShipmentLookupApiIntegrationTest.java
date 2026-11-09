@@ -2,12 +2,15 @@ package ca.vm.parcelflow.shipment.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ca.vm.parcelflow.security.ParcelFlowRole;
+import ca.vm.parcelflow.support.security.WithParcelFlowUser;
 import ca.vm.parcelflow.shipment.ShipmentRepository;
 import ca.vm.parcelflow.support.RedisIntegrationTest;
 import com.jayway.jsonpath.JsonPath;
@@ -32,6 +35,9 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+// Pre-dates authentication. ADMIN is the role whose view of the API is what these tests always
+// assumed: every retailer, plus the admin endpoints. Retailer isolation has its own tests.
+@WithParcelFlowUser(role = ParcelFlowRole.ADMIN)
 class ShipmentLookupApiIntegrationTest extends RedisIntegrationTest {
 
     private static final MediaType PROBLEM_JSON = MediaType.APPLICATION_PROBLEM_JSON;
@@ -273,7 +279,7 @@ class ShipmentLookupApiIntegrationTest extends RedisIntegrationTest {
                   "trackingNumber": %s,
                   "carrierCode": "%s"
                 }""".formatted(jsonString(trackingNumber), carrierCode);
-        String response = mockMvc.perform(post("/api/shipments")
+        String response = mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())

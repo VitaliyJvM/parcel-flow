@@ -2,6 +2,7 @@ import { HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { problem, provideTestHttp, shipment } from '../../../testing/http';
+import { signInAs } from '../../../testing/auth';
 import { RetailerContext } from '../../core/retailer/retailer-context';
 import { createRegisterForm, ShipmentRegisterPage, toRegisterRequest } from './shipment-register-page';
 
@@ -57,6 +58,7 @@ describe('ShipmentRegisterPage', () => {
       providers: [...provideTestHttp(), provideRouter([])],
     });
     localStorage.clear();
+    signInAs('ADMIN');
     TestBed.inject(RetailerContext).select('retailer-42');
     http = TestBed.inject(HttpTestingController);
     const fixture = TestBed.createComponent(ShipmentRegisterPage);
@@ -141,6 +143,7 @@ describe('ShipmentRegisterPage', () => {
     const { body, opts } = problem(409, 'duplicate-tracking-number', {
       carrierCode: 'SWIFTPOST',
       trackingNumber: 'SP900',
+      existingShipmentAccessible: true,
     });
     http.expectOne('/api/shipments').flush(body, opts);
     await fixture.whenStable();
@@ -170,7 +173,11 @@ describe('ShipmentRegisterPage', () => {
     fill(el, 'customerId', 'cust-1');
     fill(el, 'trackingNumber', 'SP900');
     submit(el);
-    const conflict = problem(409, 'duplicate-tracking-number', { carrierCode: 'SWIFTPOST', trackingNumber: 'SP900' });
+    const conflict = problem(409, 'duplicate-tracking-number', {
+      carrierCode: 'SWIFTPOST',
+      trackingNumber: 'SP900',
+      existingShipmentAccessible: true,
+    });
     http.expectOne('/api/shipments').flush(conflict.body, conflict.opts);
     await fixture.whenStable();
 
@@ -182,6 +189,28 @@ describe('ShipmentRegisterPage', () => {
     await fixture.whenStable();
     expect(el.querySelector('pf-error-panel')?.textContent).toContain('corr-gone');
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('offers nothing to open when the duplicate is not a shipment the user may see', async () => {
+    const fixture = await setup();
+    const el = fixture.nativeElement as HTMLElement;
+    fill(el, 'customerId', 'cust-1');
+    fill(el, 'trackingNumber', 'SP900');
+    submit(el);
+    const conflict = problem(409, 'duplicate-tracking-number', {
+      carrierCode: 'SWIFTPOST',
+      trackingNumber: 'SP900',
+      existingShipmentAccessible: false,
+    });
+    http.expectOne('/api/shipments').flush(conflict.body, conflict.opts);
+    await fixture.whenStable();
+
+    expect(el.querySelector('[data-testid="duplicate-not-accessible"]')?.textContent).toContain(
+      'not by a shipment you can view',
+    );
+    expect(Array.from(el.querySelectorAll('button')).some((b) => b.textContent?.includes('Open existing'))).toBe(false);
+    // No lookup is attempted: there is nothing the user is allowed to open.
+    http.expectNone((r) => r.url === '/api/shipments/lookup');
   });
 
   it('maps backend validation errors onto their controls', async () => {
@@ -217,5 +246,41 @@ describe('ShipmentRegisterPage', () => {
     expect(page.isOperational('SWIFTPOST')).toBe(true);
     expect(page.isOperational('NORDEX')).toBe(false);
     expect(page.isOperational('METROLINK')).toBe(false);
+  });
+});
+
+describe('ShipmentRegisterPage (RETAILER)', () => {
+  it('locks the retailer field to the server-assigned retailer and still sends it', async () => {
+    TestBed.configureTestingModule({
+      imports: [ShipmentRegisterPage],
+      providers: [...provideTestHttp(), provideRouter([])],
+    });
+    localStorage.clear();
+    signInAs('RETAILER', 'alpha-goods');
+    vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const http = TestBed.inject(HttpTestingController);
+    const fixture = TestBed.createComponent(ShipmentRegisterPage);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const retailerInput = el.querySelector<HTMLInputElement>('input[formcontrolname="retailerId"]');
+    expect(retailerInput?.disabled).toBe(true);
+    expect(retailerInput?.value).toBe('alpha-goods');
+    expect(el.textContent).toContain('Assigned to your account');
+
+    const values: [string, string][] = [
+      ['customerId', 'c-1'],
+      ['trackingNumber', 'SP-R-1'],
+    ];
+    for (const [name, value] of values) {
+      const input = el.querySelector(`input[formcontrolname="${name}"]`) as HTMLInputElement;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+    }
+    el.querySelector('form')?.dispatchEvent(new Event('submit'));
+    const request = http.expectOne('/api/shipments');
+    expect(request.request.body.retailerId).toBe('alpha-goods');
+    request.flush(shipment({ retailerId: 'alpha-goods' }));
+    http.verify();
   });
 });

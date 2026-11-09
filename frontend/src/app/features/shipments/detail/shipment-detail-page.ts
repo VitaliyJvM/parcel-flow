@@ -12,6 +12,7 @@ import { formatRelative } from '../../../shared/dates';
 import { CARRIER_META, isOperationalCarrier } from '../../../shared/domain';
 import { ErrorPanel } from '../../../shared/error-panel';
 import { StatusChip } from '../../../shared/status-chip';
+import { AuthSession } from '../../../core/auth/auth-session';
 import { SimulationPanel } from '../../simulator/simulation-panel';
 import { NotificationList } from './notification-list';
 import { TrackingTimeline } from './tracking-timeline';
@@ -51,6 +52,7 @@ const LIVE_LABEL = {
 })
 export class ShipmentDetailPage {
   protected readonly live = inject(ShipmentLiveTracker);
+  protected readonly session = inject(AuthSession);
 
   /** Route parameter (withComponentInputBinding). */
   readonly shipmentId = input.required<string>();

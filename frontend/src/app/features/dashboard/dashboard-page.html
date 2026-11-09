@@ -141,6 +141,7 @@
       }
     </section>
 
+    @if (session.isAdmin()) {
     <section class="pf-card" aria-labelledby="failed-heading">
       <div class="pf-card-header">
         <h2 id="failed-heading">
@@ -175,5 +176,6 @@
         </ul>
       }
     </section>
+    }
   </div>
 }

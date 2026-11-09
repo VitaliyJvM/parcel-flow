@@ -430,8 +430,10 @@ runs, and therefore the standing proof that correctness does not depend on it. D
 - **The event contract is declared twice**, once per module, deliberately — but the two copies are
   kept in step by hand. A schema registry is the real fix.
 - **No bulk DLT replay.** Retry is one event at a time through the admin API.
-- **`/api/admin/**` is unauthenticated.** Out of MVP scope; the path prefix exists so the subtree can
-  be secured with one rule.
+- **Authentication is local-grade at the edges.** `/api/**` requires an OIDC session (Keycloak, BFF
+  pattern), `/api/admin/**` the ADMIN role, and retailer isolation is enforced in the services; but
+  Keycloak runs in development mode and sessions are in memory on one instance. See
+  [security.md](security.md).
 - **`sequenceNumber` is trusted.** The fallback to `eventTime` handles a carrier omitting it, but not
   a carrier resetting it mid-journey.
 - **The third ordering level depends on arrival order**, so two genuinely ambiguous events replayed
@@ -825,7 +827,8 @@ restores actually tested. A Kafka cluster with replication factor 3, `min.insync
 DLT with the same durability as the main topic. Several service instances across availability zones,
 behind a load balancer that consults the readiness probe.
 
-**Security.** Authentication and an operator role in front of `/api/admin/**`. TLS everywhere,
+**Security.** Production Keycloak (database, HA, TLS) and a shared session store or sticky sessions
+for more than one instance ([security.md §14](security.md#14-towards-a-distributed-deployment)). TLS everywhere,
 including to the broker, with SASL. Secrets from a secret manager rather than a Compose file.
 Management endpoints on a port that is not publicly routed. A schema registry, so the event contract
 stops being two hand-synchronised copies.

@@ -1,13 +1,16 @@
 name: parcelflow
 
-# The whole local environment: PostgreSQL, Redpanda, Redis, the tracking service, the Angular web
-# UI, the carrier simulator, and the Prometheus + Grafana monitoring stack.
+# The whole local environment: PostgreSQL, Redpanda, Redis, Keycloak, the tracking service, the
+# Angular web UI, the carrier simulator, and the Prometheus + Grafana monitoring stack.
 #
-# Localhost only. Every published port is bound to 127.0.0.1: nothing in this stack has
-# authentication (the API, its admin endpoints, Redis, Grafana with anonymous Admin), so none of it
-# may be reachable from the network the laptop is on. Containers still reach each other by service
-# name on the Compose network; the bindings only affect the host side. See docs/analysis/
-# angular-frontend-implementation.md for what a real deployment would need first.
+# First run: ./scripts/init-local-secrets.sh  (generates the Keycloak client secret and the local
+# user passwords into the git-ignored .env; `docker compose` refuses to start without them).
+#
+# Localhost only. Every published port is bound to 127.0.0.1. The web UI and the API require an
+# OIDC login, but the infrastructure around them does not (Redis, Redpanda, Grafana with anonymous
+# Admin, Keycloak in development mode), so none of it may be reachable from the network the laptop
+# is on. Containers still reach each other by service name on the Compose network; the bindings only
+# affect the host side. See docs/security.md for what a real deployment needs on top of this.
 #
 # Two services sit behind profiles so `docker compose up` does not start them:
 #
@@ -80,6 +83,45 @@ services:
       retries: 12
       start_period: 3s
 
+  # The OpenID Provider for the web UI. Development mode, on purpose and only here: an in-container
+  # H2 database, plain HTTP, and the realm re-imported from keycloak/realm/ whenever the container is
+  # recreated, so the local identities are reproducible and disposable. It is NOT a production
+  # Keycloak; docs/security.md lists what one needs.
+  #
+  # Hostnames. The browser reaches Keycloak at http://localhost:8180; the tracking service, inside
+  # this network, at http://keycloak:8080. KC_HOSTNAME pins the issuer, the login page and the
+  # end-session endpoint to the browser-facing URL, and KC_HOSTNAME_BACKCHANNEL_DYNAMIC lets the
+  # token, userinfo and JWKS endpoints answer on whichever host the request arrived at. Discovery
+  # fetched over the internal name therefore still advertises the public issuer, which is what the
+  # tracking service validates every ID token against. See DiscoveringClientRegistrationRepository.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: [ "start-dev", "--import-realm" ]
+    environment:
+      # The master-realm admin console at http://localhost:8180/admin. Local only.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run ./scripts/init-local-secrets.sh}
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8180}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      # Substituted into keycloak/realm/parcelflow-realm.json at import. Never committed.
+      PARCELFLOW_OIDC_CLIENT_SECRET: ${PARCELFLOW_OIDC_CLIENT_SECRET:?run ./scripts/init-local-secrets.sh}
+      PARCELFLOW_ADMIN_PASSWORD: ${PARCELFLOW_ADMIN_PASSWORD:?run ./scripts/init-local-secrets.sh}
+      PARCELFLOW_RETAILER_PASSWORD: ${PARCELFLOW_RETAILER_PASSWORD:?run ./scripts/init-local-secrets.sh}
+    volumes:
+      - ./keycloak/realm:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8180}:8080"
+    healthcheck:
+      # The image has no curl or wget; bash's /dev/tcp is enough for the management port's
+      # readiness endpoint.
+      test: [ "CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"UP\"' <&3" ]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 20s
+    restart: unless-stopped
+
   tracking-service:
     build:
       context: .
@@ -94,7 +136,19 @@ services:
       # outage of the whole service, which is exactly what the fallback exists to prevent.
       redis:
         condition: service_started
+      # started, not healthy: the service resolves Keycloak lazily, on the first login. Until
+      # Keycloak answers, login fails closed and everything else (health, Kafka) works.
+      keycloak:
+        condition: service_started
     environment:
+      # Plain-HTTP localhost settings (non-Secure cookie, no HTTPS redirect). See
+      # application-local.yml; everything else is the production configuration.
+      SPRING_PROFILES_ACTIVE: local
+      # The issuer as the browser sees it, and where this container fetches discovery from.
+      PARCELFLOW_OIDC_ISSUER_URI: http://localhost:${KEYCLOAK_PORT:-8180}/realms/parcelflow
+      PARCELFLOW_OIDC_DISCOVERY_URI: http://keycloak:8080/realms/parcelflow/.well-known/openid-configuration
+      PARCELFLOW_OIDC_CLIENT_SECRET: ${PARCELFLOW_OIDC_CLIENT_SECRET:?run ./scripts/init-local-secrets.sh}
+
       # Spring relaxed binding maps these onto spring.datasource.* and spring.kafka.*,
       # overriding the localhost defaults in application.yml.
       # Credentials are not in application.yml — that file is packaged into the jar — so they are
@@ -115,8 +169,9 @@ services:
 
       # The load-testing publish endpoint. Off unless explicitly asked for:
       #   PARCELFLOW_LOAD_TESTING_ENABLED=true docker compose up -d --force-recreate
-      # It accepts unauthenticated writes to the carrier events topic and exists only so the k6
-      # scenario can generate events at a rate a CLI cannot.
+      # It writes raw events to the carrier events topic and exists only so the k6 scenario can
+      # generate events at a rate a CLI cannot. Even enabled, it requires an ADMIN session and a
+      # CSRF token like the rest of the API.
       #
       # The underscore between LOAD and TESTING matters. Relaxed binding has two different rules:
       # @ConfigurationProperties binding accepts the dash-removed form (PARCELFLOW_LOADTESTING_...),
@@ -126,7 +181,8 @@ services:
       PARCELFLOW_LOAD_TESTING_ENABLED: ${PARCELFLOW_LOAD_TESTING_ENABLED:-false}
     ports:
       # Direct API access (Swagger UI, curl, the Angular dev proxy). The web UI does not need it:
-      # it reaches the service over the Compose network through its own nginx.
+      # it reaches the service over the Compose network through its own nginx. The API on this
+      # port is exactly as protected as through nginx: same session, same CSRF, same roles.
       - "127.0.0.1:8080:8080"
     healthcheck:
       # Readiness, not liveness: this only reports healthy once Flyway has
@@ -187,12 +243,18 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # The Angular web UI. nginx serves the static build and reverse-proxies /api/ to the tracking
-  # service, so the browser uses one origin and the backend needs no CORS configuration. It does
-  # not proxy /actuator, /internal, /v3/api-docs or /swagger-ui (see frontend/nginx/default.conf).
+  # The Angular web UI. nginx serves the static build and reverse-proxies /api/ and the three
+  # Spring Security endpoints of the login flow (/oauth2/authorization/, /login/oauth2/code/,
+  # /logout) to the tracking service, so the browser uses one origin, the session cookie is
+  # first-party, and the backend needs no CORS configuration. It does not proxy /actuator,
+  # /internal, /v3/api-docs or /swagger-ui (see frontend/nginx/default.conf).
   frontend:
     build:
       context: ./frontend
+    environment:
+      # Allowed as a form-action target in the CSP: logout is a form POST that the tracking service
+      # answers with a redirect to Keycloak's end-session endpoint.
+      OIDC_PROVIDER_ORIGIN: http://localhost:${KEYCLOAK_PORT:-8180}
     depends_on:
       # started, not healthy: nginx resolves the backend per request, so the UI can come up first
       # and show "service unreachable" rather than not existing at all.

@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { MatDialogRef } from '@angular/material/dialog';
+import { signInAs } from '../../../testing/auth';
 import { RetailerContext } from './retailer-context';
 import { RetailerDialog } from './retailer-dialog.component';
 
@@ -12,6 +13,7 @@ describe('RetailerDialog', () => {
       imports: [RetailerDialog],
       providers: [{ provide: MatDialogRef, useValue: { close } }],
     });
+    signInAs('ADMIN');
     const fixture = TestBed.createComponent(RetailerDialog);
     await fixture.whenStable();
     return { fixture, close, el: fixture.nativeElement as HTMLElement };
