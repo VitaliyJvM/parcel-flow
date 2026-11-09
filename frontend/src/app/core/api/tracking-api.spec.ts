@@ -32,6 +32,17 @@ describe('ShipmentsApi / FailedEventsApi', () => {
     req.flush(page([]));
   });
 
+  it('looks a shipment up by carrier and tracking number, sending the number verbatim', () => {
+    TestBed.inject(ShipmentsApi).lookup('PACIFICA', 'PX 1/2&3+4').subscribe();
+    const req = controller.expectOne((r) => r.url === '/api/shipments/lookup');
+    expect(req.request.method).toBe('GET');
+    expect(req.request.params.get('carrierCode')).toBe('PACIFICA');
+    expect(req.request.params.get('trackingNumber')).toBe('PX 1/2&3+4');
+    // Reserved characters must not leak into the query string unescaped.
+    expect(req.request.urlWithParams).toContain('trackingNumber=PX%201/2%263%2B4');
+    req.flush(shipment());
+  });
+
   it('posts a registration body unchanged', () => {
     const body = {
       retailerId: 'r',

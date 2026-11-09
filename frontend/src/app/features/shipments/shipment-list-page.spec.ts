@@ -146,6 +146,16 @@ describe('ShipmentListPage', () => {
     http.expectOne((r) => r.url === '/api/retailers/retailer-42/shipments').flush(page([]));
   });
 
+  it('offers tracking-number lookup alongside the list', async () => {
+    const fixture = await setup();
+    http.expectOne((r) => r.url === '/api/retailers/retailer-42/shipments').flush(page([shipment()]));
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('pf-shipment-lookup-form')?.textContent).toContain('Find by tracking number');
+    // Open-by-ID is still there.
+    expect(el.querySelector('form[aria-label="Open shipment by ID"]')).not.toBeNull();
+  });
+
   it('asks for a retailer when none is selected', async () => {
     TestBed.configureTestingModule({
       imports: [ShipmentListPage],
@@ -158,6 +168,8 @@ describe('ShipmentListPage', () => {
     TestBed.tick();
     await fixture.whenStable();
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('Choose a retailer');
+    // Lookup is not retailer-scoped, so it stays available without a selection.
+    expect((fixture.nativeElement as HTMLElement).querySelector('pf-shipment-lookup-form')).not.toBeNull();
     http.expectNone((r) => r.url.includes('/shipments'));
   });
 });

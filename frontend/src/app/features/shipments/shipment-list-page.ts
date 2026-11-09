@@ -22,6 +22,7 @@ import { ErrorPanel } from '../../shared/error-panel';
 import { RetailerRequired } from '../../shared/retailer-required';
 import { StatusChip } from '../../shared/status-chip';
 import { parseListQuery } from './list-query';
+import { ShipmentLookupForm } from './shipment-lookup-form';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -44,6 +45,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
     LocalDateDisplay,
     ErrorPanel,
     RetailerRequired,
+    ShipmentLookupForm,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './shipment-list-page.html',

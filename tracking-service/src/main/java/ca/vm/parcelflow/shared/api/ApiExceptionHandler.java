@@ -2,6 +2,7 @@ package ca.vm.parcelflow.shared.api;
 
 import ca.vm.parcelflow.shipment.DuplicateTrackingNumberException;
 import ca.vm.parcelflow.shipment.ShipmentNotFoundException;
+import ca.vm.parcelflow.shipment.TrackingNumberNotFoundException;
 import ca.vm.parcelflow.tracking.failure.FailedEventExceptions;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -19,6 +20,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -49,6 +51,20 @@ public class ApiExceptionHandler {
         ProblemDetail problem = problem(HttpStatus.NOT_FOUND, "Shipment not found", e.getMessage(),
                 "shipment-not-found");
         problem.setProperty("shipmentId", e.getShipmentId().toString());
+        return problem;
+    }
+
+    /**
+     * Same problem type as a lookup by id — both mean "no shipment at this address" — with the
+     * identifiers the client actually sent as extension members instead of a shipment id. Nothing
+     * beyond the client's own input is echoed, so the body reveals no more than the status code.
+     */
+    @ExceptionHandler(TrackingNumberNotFoundException.class)
+    public ProblemDetail handleTrackingNumberNotFound(TrackingNumberNotFoundException e) {
+        ProblemDetail problem = problem(HttpStatus.NOT_FOUND, "Shipment not found", e.getMessage(),
+                "shipment-not-found");
+        problem.setProperty("carrierCode", e.getCarrierCode().name());
+        problem.setProperty("trackingNumber", e.getTrackingNumber());
         return problem;
     }
 
@@ -122,6 +138,22 @@ public class ApiExceptionHandler {
         ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, "Validation failed",
                 "One or more request parameters are invalid", "validation-failed");
         problem.setProperty("errors", errors);
+        return problem;
+    }
+
+    /**
+     * A required query parameter is absent — or present but empty for a type such as an enum,
+     * which Spring converts to {@code null} and then reports the same way.
+     *
+     * <p>Without this the catch-all below answers a client mistake with a 500 and an ERROR log
+     * line. Reported in the same {@code validation-failed} shape as a constraint violation, so a
+     * client handles "missing" and "blank" with one code path.
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ProblemDetail handleMissingParameter(MissingServletRequestParameterException e) {
+        ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, "Validation failed",
+                "One or more request parameters are invalid", "validation-failed");
+        problem.setProperty("errors", Map.of(e.getParameterName(), "is required"));
         return problem;
     }
 

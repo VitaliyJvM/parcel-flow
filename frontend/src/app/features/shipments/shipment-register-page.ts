@@ -14,12 +14,21 @@ import { CarrierCode, RegisterShipmentRequest } from '../../core/api/models';
 import { ShipmentsApi } from '../../core/api/tracking-api';
 import { RetailerContext } from '../../core/retailer/retailer-context';
 import { isLocalDateBefore, todayLocalDate } from '../../shared/dates';
-import { CARRIER_META, CARRIERS, isOperationalCarrier } from '../../shared/domain';
+import {
+  CARRIER_META,
+  CARRIERS,
+  isOperationalCarrier,
+  TRACKING_NUMBER_MAX_LENGTH,
+} from '../../shared/domain';
 import { ErrorPanel } from '../../shared/error-panel';
 import { applyServerErrors, notBlank } from '../../shared/validators';
 
 /** Limits copied from `RegisterShipmentRequest` (@Size(max = ...)). */
-export const REGISTER_LIMITS = { retailerId: 64, customerId: 64, trackingNumber: 128 } as const;
+export const REGISTER_LIMITS = {
+  retailerId: 64,
+  customerId: 64,
+  trackingNumber: TRACKING_NUMBER_MAX_LENGTH,
+} as const;
 
 export type RegisterForm = FormGroup<{
   retailerId: FormControl<string>;
@@ -95,7 +104,8 @@ export class ShipmentRegisterPage {
   protected readonly submitting = signal(false);
   /** Errors that did not map onto a field (non-validation failures, unknown fields). */
   protected readonly formError = signal<ApiError | null>(null);
-  protected readonly duplicate = signal<{ carrier: string; trackingNumber: string } | null>(null);
+  protected readonly duplicate = signal<{ carrierCode: CarrierCode; trackingNumber: string } | null>(null);
+  protected readonly openingExisting = signal(false);
 
   private readonly formValue = toSignal(this.form.valueChanges, { initialValue: this.form.value });
   protected readonly etaInPast = computed(() => {
@@ -126,11 +136,34 @@ export class ShipmentRegisterPage {
       });
   }
 
+  /**
+   * Resolves the shipment the duplicate collided with and opens it. The existing shipment may
+   * belong to another retailer; the detail page shows whose it is, and the selected retailer is
+   * deliberately left unchanged.
+   */
+  protected openExisting(): void {
+    const d = this.duplicate();
+    if (!d || this.openingExisting()) {
+      return;
+    }
+    this.formError.set(null);
+    this.openingExisting.set(true);
+    this.api
+      .lookup(d.carrierCode, d.trackingNumber)
+      .pipe(finalize(() => this.openingExisting.set(false)))
+      .subscribe({
+        next: (shipment) => void this.router.navigate(['/shipments', shipment.shipmentId]),
+        error: (err: unknown) => this.formError.set(toApiError(err)),
+      });
+  }
+
   private handleError(error: ApiError, request: RegisterShipmentRequest): void {
     if (error.status === 409 && error.slug === 'duplicate-tracking-number') {
+      // Prefer the server's echo: it is the exact pair the unique constraint compared.
       const trackingNumber = error.extension('trackingNumber') ?? request.trackingNumber;
-      const carrier = error.extension('carrierCode') ?? request.carrierCode;
-      this.duplicate.set({ carrier, trackingNumber });
+      const echoed = error.extension('carrierCode');
+      const carrierCode = CARRIERS.find((c) => c === echoed) ?? request.carrierCode;
+      this.duplicate.set({ carrierCode, trackingNumber });
       const control = this.form.controls.trackingNumber;
       control.setErrors({ ...(control.errors ?? {}), duplicate: true });
       control.markAsTouched();

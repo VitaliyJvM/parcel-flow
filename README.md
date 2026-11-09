@@ -387,6 +387,30 @@ curl http://localhost:8080/api/shipments/00c5356b-8b0b-47e5-b88c-1e504dd2bf34
 curl 'http://localhost:8080/api/retailers/retailer-42/shipments?page=0&size=20&status=IN_TRANSIT'
 ```
 
+Find a shipment by the carrier's tracking number. A tracking number is unique per carrier, not
+globally, so the carrier is part of the key. Matching is exact — case-sensitive and untrimmed — the
+same comparison the duplicate-registration constraint makes:
+
+```bash
+curl 'http://localhost:8080/api/shipments/lookup?carrierCode=SWIFTPOST&trackingNumber=SP100000000042'
+```
+
+The body is the same `ShipmentResponse` as a read by id. A miss is a `404` with the
+`shipment-not-found` problem type and the inputs echoed back; a missing, blank or over-long parameter,
+or an unknown carrier code, is a `400`:
+
+```json
+{
+  "type": "https://parcelflow.example/problems/shipment-not-found",
+  "title": "Shipment not found",
+  "status": 404,
+  "detail": "No shipment found for carrier SWIFTPOST and tracking number SP-12345",
+  "instance": "/api/shipments/lookup",
+  "carrierCode": "SWIFTPOST",
+  "trackingNumber": "SP-12345"
+}
+```
+
 Errors are RFC 9457 `application/problem+json` with a stable `type` URI, so clients branch on the
 error kind rather than parsing prose. Re-posting the same tracking number returns `409`:
 
@@ -459,6 +483,7 @@ history because they are real observations.
 |---|---|---|
 | `POST` | `/api/shipments` | 1 |
 | `GET` | `/api/shipments/{shipmentId}` | 1 |
+| `GET` | `/api/shipments/lookup?carrierCode=&trackingNumber=` | Tracking lookup |
 | `GET` | `/api/retailers/{retailerId}/shipments` | 1 |
 | `GET` | `/api/shipments/{shipmentId}/events` | 2 |
 | `GET` | `/api/shipments/{shipmentId}/notifications` | 3 |
@@ -558,7 +583,10 @@ Known limitations, stated plainly:
   and can trigger reprocessing. The web UI shows these screens with a warning; it does not and
   cannot protect them.
 - **No retailer isolation.** Any caller can list any retailer's shipments by changing the path; the
-  UI's retailer selector is a view filter.
+  UI's retailer selector is a view filter. Likewise, `GET /api/shipments/lookup` answers anyone who
+  knows a carrier and tracking number. `ShipmentService.lookupShipment` is the single place the
+  future ownership check goes, and it should answer a non-owner with the same `404` as a miss so
+  tracking numbers cannot be enumerated across retailers.
 - **The event contract is declared twice**, once per module, deliberately — see
   [docs/event-processing.md](docs/event-processing.md#the-contract-is-not-a-shared-class). The two
   copies are kept in step by hand; a schema registry is the real fix.

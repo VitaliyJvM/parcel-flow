@@ -1,8 +1,6 @@
 # ParcelFlow web UI
 
-Angular 22 console for the ParcelFlow tracking service. **Local, unauthenticated demo** — see the
-[implementation report](../docs/analysis/angular-frontend-implementation.md) for architecture,
-security limits and test results.
+Angular 22 console for the ParcelFlow tracking service. **Local, unauthenticated demo**.
 
 ## Requirements
 
@@ -44,7 +42,7 @@ src/app/
   shared/         status chips, date display, error panel, validators, enum metadata
   features/
     dashboard/    per-retailer status counts (bounded concurrency), recent shipments
-    shipments/    list, registration, detail (timeline, notifications, simulate tab)
+    shipments/    list, tracking-number lookup, registration, detail (timeline, notifications, simulate tab)
     operations/   failed-event list, detail and manual retry
     simulator/    CLI command builder (nothing is executed from the browser)
     about/        demo limitations, 404

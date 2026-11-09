@@ -3,6 +3,7 @@ import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { SKIP_RETRY } from '../http/interceptors';
 import {
+  CarrierCode,
   FailedEventResponse,
   FailedEventRetryResponse,
   FailedEventStatus,
@@ -52,6 +53,17 @@ export class ShipmentsApi {
   get(shipmentId: string, options?: ReadOptions): Observable<ShipmentResponse> {
     return this.http.get<ShipmentResponse>(`/api/shipments/${encodeURIComponent(shipmentId)}`, {
       context: context(options),
+    });
+  }
+
+  /**
+   * `GET /api/shipments/lookup`: the shipment registered under a carrier's tracking number. The
+   * backend matches the tracking number exactly (case-sensitive, untrimmed); callers decide whether
+   * to trim. A miss is a 404 `shipment-not-found` `ApiError`.
+   */
+  lookup(carrierCode: CarrierCode, trackingNumber: string): Observable<ShipmentResponse> {
+    return this.http.get<ShipmentResponse>('/api/shipments/lookup', {
+      params: new HttpParams().set('carrierCode', carrierCode).set('trackingNumber', trackingNumber),
     });
   }
 
