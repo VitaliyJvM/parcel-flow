@@ -9,6 +9,7 @@ import { map, of } from 'rxjs';
 import { toApiError } from '../../core/api/api-error';
 import { FailedEventStatus, ShipmentStatus } from '../../core/api/models';
 import { FailedEventsApi, ShipmentsApi } from '../../core/api/tracking-api';
+import { AuthSession } from '../../core/auth/auth-session';
 import { RetailerContext } from '../../core/retailer/retailer-context';
 import { InstantDisplay } from '../../shared/date-display';
 import {
@@ -32,7 +33,8 @@ export const COUNTS_NOTE =
   'counts load can be counted in two tiles or none.';
 export const FAILED_NOTE =
   'Dead-lettered carrier events are not tied to a retailer in the API, so these counts cover all ' +
-  'retailers. Throughput, latency and backlog are in Grafana, not here.';
+  'retailers and are shown to operators (ADMIN) only. Throughput, latency and backlog are in ' +
+  'Grafana, not here.';
 
 @Component({
   selector: 'pf-dashboard-page',
@@ -55,6 +57,7 @@ export class DashboardPage {
   private readonly shipmentsApi = inject(ShipmentsApi);
   private readonly failedEventsApi = inject(FailedEventsApi);
   protected readonly retailer = inject(RetailerContext);
+  protected readonly session = inject(AuthSession);
 
   protected readonly statuses = SHIPMENT_STATUSES;
   protected readonly statusMeta = SHIPMENT_STATUS_META;
@@ -90,12 +93,15 @@ export class DashboardPage {
           ),
   });
 
+  /** ADMIN only: failed events span every retailer, and the endpoint answers 403 to anyone else. */
   protected readonly failedCounts = rxResource({
-    params: () => ({ token: this.refreshToken() }),
-    stream: () =>
-      loadCounts<FailedEventStatus>(FAILED_EVENT_STATUSES, (status) =>
-        this.failedEventsApi.list({ page: 0, size: 1 }, status).pipe(map((page) => page.totalElements)),
-      ),
+    params: () => ({ token: this.refreshToken(), admin: this.session.isAdmin() }),
+    stream: ({ params }) =>
+      !params.admin
+        ? of(null)
+        : loadCounts<FailedEventStatus>(FAILED_EVENT_STATUSES, (status) =>
+            this.failedEventsApi.list({ page: 0, size: 1 }, status).pipe(map((page) => page.totalElements)),
+          ),
   });
 
   /** "—" on failure (like the status tiles), "…" only while actually loading. */

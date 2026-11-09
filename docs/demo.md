@@ -6,6 +6,7 @@ delivered — it is what happens when the event stream misbehaves.
 **Before you start** (this part is not in the five minutes):
 
 ```bash
+./scripts/init-local-secrets.sh             # once: Keycloak secrets and local passwords into .env
 docker compose down -v
 docker compose up --build -d
 docker compose build carrier-simulator      # behind a profile, so `up --build` skips it
@@ -17,13 +18,22 @@ browser and leave the ParcelFlow dashboard visible — it is the backdrop for th
 ```bash
 until curl -fsS http://localhost:8080/actuator/health/readiness >/dev/null 2>&1; do sleep 2; done
 echo "ready"
+
+# The API accepts a browser session only. Sign in once through the real OIDC flow and reuse the
+# cookie jar (docs/security.md §11). PF_XSRF is the CSRF token every POST must send.
+set -a && source .env && set +a
+scripts/oidc-login.sh http://localhost:8080 ops.admin PARCELFLOW_ADMIN_PASSWORD /tmp/pf.jar >/dev/null
+export PF_JAR=/tmp/pf.jar PF_XSRF="$(curl -s -b /tmp/pf.jar http://localhost:8080/api/auth/csrf | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
 ```
+
+The web UI at <http://localhost:8081> shows the same data after signing in as `ops.admin`
+(`./scripts/init-local-secrets.sh --print` shows the password).
 
 A helper used throughout:
 
 ```bash
 register() {
-  curl -s -X POST http://localhost:8080/api/shipments \
+  curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -s -X POST http://localhost:8080/api/shipments \
     -H 'Content-Type: application/json' \
     -d "{\"retailerId\":\"retailer-42\",\"customerId\":\"cust-9f13\",\"trackingNumber\":\"$1\",\"carrierCode\":\"SWIFTPOST\"}" \
     | python3 -c 'import sys,json;print(json.load(sys.stdin)["shipmentId"])'
@@ -43,7 +53,7 @@ reports healthy only after Flyway has migrated and the broker is reachable, beca
 health check hits the readiness probe rather than the port.
 
 ```bash
-curl -s http://localhost:8080/actuator/health/readiness | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/actuator/health/readiness | python3 -m json.tool
 ```
 
 > Readiness includes `db` and `kafka` and deliberately excludes `redis`. Redis is a cache; an outage
@@ -55,7 +65,7 @@ curl -s http://localhost:8080/actuator/health/readiness | python3 -m json.tool
 ```bash
 ID=$(register SP-DEMO-001)
 echo $ID
-curl -s http://localhost:8080/api/shipments/$ID | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID | python3 -m json.tool
 ```
 
 `LABEL_CREATED`, `version: 0`, no `lastEventTime`. The API is documented at
@@ -75,13 +85,13 @@ docker compose run --rm carrier-simulator \
 ## 4. Current status and full history
 
 ```bash
-curl -s http://localhost:8080/api/shipments/$ID | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID | python3 -m json.tool
 ```
 
 `DELIVERED`, and `version: 8` — one optimistic-lock increment per applied event.
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$ID/events?size=50" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$ID/events?size=50" \
   | python3 -c 'import sys,json;[print(f"{e[\"sequenceNumber\"]:>2}  {e[\"carrierEventType\"]:<14} -> {e[\"normalizedEventType\"]:<20} {e[\"processingStatus\"]}") for e in json.load(sys.stdin)["content"]]'
 ```
 
@@ -89,7 +99,7 @@ Every entry keeps both readings: the carrier's code and ParcelFlow's normalized 
 notifications the milestones produced:
 
 ```bash
-curl -s http://localhost:8080/api/shipments/$ID/notifications \
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID/notifications \
   | python3 -c 'import sys,json;[print(n["notificationType"], n["status"]) for n in json.load(sys.stdin)["content"]]'
 ```
 
@@ -113,11 +123,11 @@ The simulator reports **12 events published**.
 ## 6. Show that duplicates change nothing
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$DUP/events?size=50" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$DUP/events?size=50" \
   | python3 -c 'import sys,json;print("events stored:", json.load(sys.stdin)["totalElements"])'
-curl -s http://localhost:8080/api/shipments/$DUP \
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$DUP \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print("status:", d["currentStatus"], " version:", d["version"])'
-curl -s http://localhost:8080/api/shipments/$DUP/notifications \
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$DUP/notifications \
   | python3 -c 'import sys,json;print("notifications:", json.load(sys.stdin)["totalElements"])'
 ```
 
@@ -144,9 +154,9 @@ docker compose run --rm carrier-simulator \
 ## 8. Show that the current status does not regress
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$OOO/events?size=50" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$OOO/events?size=50" \
   | python3 -c 'import sys,json;[print(f"{e[\"sequenceNumber\"]:>2}  {e[\"normalizedEventType\"]:<20} {e[\"processingStatus\"]}") for e in json.load(sys.stdin)["content"]]'
-curl -s http://localhost:8080/api/shipments/$OOO \
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$OOO \
   | python3 -c 'import sys,json;print("status:", json.load(sys.stdin)["currentStatus"])'
 ```
 
@@ -166,7 +176,7 @@ docker compose run --rm carrier-simulator \
 ## 10. Show the failed-event and dead-letter handling
 
 ```bash
-curl -s 'http://localhost:8080/api/admin/failed-events' | python3 -m json.tool
+curl -b "$PF_JAR" -s 'http://localhost:8080/api/admin/failed-events' | python3 -m json.tool
 ```
 
 One row: `errorCategory: VALIDATION`, `retryableAutomatically: false`, `retryableManually: false`,
@@ -183,7 +193,7 @@ and a permanently invalid payload **skips the retry backoff entirely**, because 
 retries on bytes that can never succeed just delays every other record on the partition.
 
 ```bash
-curl -s -X POST http://localhost:8080/api/admin/failed-events/<id>/retry
+curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -s -X POST http://localhost:8080/api/admin/failed-events/<id>/retry
 ```
 
 Returns 409 with the category — the API saying "fix the producer, not the button". Categories that
@@ -216,7 +226,7 @@ docker compose stop redis
 
 curl -s -o /dev/null -w 'readiness %{http_code}\n' http://localhost:8080/actuator/health/readiness
 curl -s -o /dev/null -w 'health    %{http_code}\n' http://localhost:8080/actuator/health
-curl -s http://localhost:8080/api/shipments/$ID | python3 -c 'import sys,json;print("read still works:", json.load(sys.stdin)["currentStatus"])'
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID | python3 -c 'import sys,json;print("read still works:", json.load(sys.stdin)["currentStatus"])'
 curl -s http://localhost:8080/actuator/prometheus | grep 'parcelflow_cache_failures_total' | grep -v ' 0.0$'
 
 docker compose start redis

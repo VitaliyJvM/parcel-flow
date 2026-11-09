@@ -1,5 +1,6 @@
 package ca.vm.parcelflow.tracking.api;
 
+import ca.vm.parcelflow.security.CurrentUserProvider;
 import ca.vm.parcelflow.shared.api.PageResponse;
 import ca.vm.parcelflow.tracking.TrackingHistoryService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -26,9 +27,12 @@ public class TrackingHistoryController {
     private static final int MAX_PAGE_SIZE = 200;
 
     private final TrackingHistoryService trackingHistoryService;
+    private final CurrentUserProvider currentUser;
 
-    public TrackingHistoryController(TrackingHistoryService trackingHistoryService) {
+    public TrackingHistoryController(
+            TrackingHistoryService trackingHistoryService, CurrentUserProvider currentUser) {
         this.trackingHistoryService = trackingHistoryService;
+        this.currentUser = currentUser;
     }
 
     @GetMapping("/api/shipments/{shipmentId}/events")
@@ -39,14 +43,14 @@ public class TrackingHistoryController {
                     number. Superseded events — those that arrived too late to change the current \
                     status — are included: they are real observations and belong in the history.""")
     @ApiResponse(responseCode = "200", description = "A page of tracking events")
-    @ApiResponse(responseCode = "404", description = "No such shipment", content = {})
+    @ApiResponse(responseCode = "404", description = "No such shipment, or not the caller's", content = {})
     public PageResponse<TrackingEventResponse> getTrackingHistory(
             @PathVariable UUID shipmentId,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "50") @Min(1) @Max(MAX_PAGE_SIZE) int size) {
 
         return PageResponse.from(
-                trackingHistoryService.findShipmentHistory(shipmentId, page, size),
+                trackingHistoryService.findShipmentHistory(currentUser.require(), shipmentId, page, size),
                 TrackingEventResponse::from);
     }
 }

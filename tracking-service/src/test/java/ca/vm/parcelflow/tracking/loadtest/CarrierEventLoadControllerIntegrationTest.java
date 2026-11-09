@@ -2,10 +2,13 @@ package ca.vm.parcelflow.tracking.loadtest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ca.vm.parcelflow.security.ParcelFlowRole;
+import ca.vm.parcelflow.support.security.WithParcelFlowUser;
 import ca.vm.parcelflow.carrier.CarrierCode;
 import ca.vm.parcelflow.shipment.ShipmentRepository;
 import ca.vm.parcelflow.shipment.domain.Shipment;
@@ -43,6 +46,9 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = "parcelflow.load-testing.enabled=true")
+// Pre-dates authentication. ADMIN is the role whose view of the API is what these tests always
+// assumed: every retailer, plus the admin endpoints. Retailer isolation has its own tests.
+@WithParcelFlowUser(role = ParcelFlowRole.ADMIN)
 class CarrierEventLoadControllerIntegrationTest extends KafkaIntegrationTest {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
@@ -74,7 +80,7 @@ class CarrierEventLoadControllerIntegrationTest extends KafkaIntegrationTest {
     void publishesASingleEvent() throws Exception {
         UUID eventId = UUID.randomUUID();
 
-        mockMvc.perform(post("/internal/load/carrier-events")
+        mockMvc.perform(post("/internal/load/carrier-events").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(event(eventId, "SP_OFD", 5)))
                 .andExpect(status().isAccepted())
@@ -93,7 +99,7 @@ class CarrierEventLoadControllerIntegrationTest extends KafkaIntegrationTest {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
 
-        mockMvc.perform(post("/internal/load/carrier-events")
+        mockMvc.perform(post("/internal/load/carrier-events").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("[" + event(first, "SP_PICKUP", 1) + ","
                                 + event(second, "SP_TRANSIT", 2) + "]"))
@@ -111,7 +117,7 @@ class CarrierEventLoadControllerIntegrationTest extends KafkaIntegrationTest {
     void publishesInvalidPayloadsUnchanged() throws Exception {
         // The endpoint does not validate. A load test that could not inject a malformed event
         // could not measure what the failure path costs.
-        mockMvc.perform(post("/internal/load/carrier-events")
+        mockMvc.perform(post("/internal/load/carrier-events").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"eventId\":\"%s\",\"schemaVersion\":99,\"shipmentId\":\"%s\"}"
                                 .formatted(UUID.randomUUID(), shipmentId)))

@@ -29,10 +29,11 @@ import tools.jackson.databind.json.JsonMapper;
  * the measurement is short-circuited except who called {@code send()}.
  *
  * <p><b>Disabled by default.</b> {@code parcelflow.load-testing.enabled} must be set to true, which
- * the standard Compose stack does not do. Enabled, this endpoint can inject arbitrary events for
- * any parcel with no authentication — it is a test harness, and a real deployment would not ship
- * it at all. The {@code /internal} prefix exists so the whole subtree can be blocked at the ingress
- * with one rule.
+ * the standard Compose stack does not do. Enabled, it requires an ADMIN browser session and a CSRF
+ * token, like every other state-changing request ({@code /internal/**} in
+ * {@code SecurityConfiguration}), and lets that admin inject arbitrary events for any parcel. It is
+ * a test harness, and a real deployment would not ship it at all. The {@code /internal} prefix
+ * exists so the whole subtree can be blocked at the ingress with one rule (nginx returns 404).
  *
  * <p><b>Pass-through, not validated.</b> The body is forwarded to the topic as written. That is
  * deliberate: a load test has to be able to publish malformed events to exercise the dead letter

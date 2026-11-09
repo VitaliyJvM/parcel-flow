@@ -7,6 +7,14 @@ For the metric and log-field reference, see [operations.md](operations.md).
 
 ---
 
+
+> **API calls need a session.** The commands below that call `/api/**` (and `/actuator/health` for
+> component details) use a cookie jar from a real OIDC login: run
+> `scripts/oidc-login.sh http://localhost:8080 ops.admin PARCELFLOW_ADMIN_PASSWORD /tmp/pf.jar` with
+> `.env` exported, then `export PF_JAR=/tmp/pf.jar PF_XSRF="$(curl -s -b /tmp/pf.jar http://localhost:8080/api/auth/csrf | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"`.
+> See [security.md §11](security.md#11-calling-the-api-from-a-terminal). Login problems are in
+> [security.md §9](security.md#9-hostnames-redirects-and-docker).
+
 ## 1. Kafka is not ready when the service starts
 
 **Symptoms.** `tracking-service` logs a stream of
@@ -30,7 +38,7 @@ docker compose ps redpanda
 docker compose exec redpanda rpk cluster health
 docker compose logs redpanda | tail -30
 docker compose exec tracking-service printenv | grep KAFKA
-curl -s http://localhost:8080/actuator/health | python3 -c 'import sys,json;print(json.load(sys.stdin)["components"]["kafka"])'
+curl -b "$PF_JAR" -s http://localhost:8080/actuator/health | python3 -c 'import sys,json;print(json.load(sys.stdin)["components"]["kafka"])'
 ```
 
 **Recovery.** The client retries forever on its own; nothing needs restarting once the broker is up.
@@ -151,7 +159,7 @@ docker compose logs tracking-service | grep -E "partitions assigned|Consumer sto
 # Were they received and rejected rather than never received?
 curl -s http://localhost:8080/actuator/prometheus \
   | grep -E "parcelflow_tracking_events_(received|failed|dlt)_total"
-curl -s 'http://localhost:8080/api/admin/failed-events' | python3 -m json.tool
+curl -b "$PF_JAR" -s 'http://localhost:8080/api/admin/failed-events' | python3 -m json.tool
 ```
 
 `rpk group describe` is the decisive one: it shows the topic, the partitions, the committed offset
@@ -185,8 +193,8 @@ failure whose budget ran out during a dependency outage.
 preserves:
 
 ```bash
-curl -s 'http://localhost:8080/api/admin/failed-events?status=FAILED' | python3 -m json.tool
-curl -s http://localhost:8080/api/admin/failed-events/<failedEventId> | python3 -m json.tool
+curl -b "$PF_JAR" -s 'http://localhost:8080/api/admin/failed-events?status=FAILED' | python3 -m json.tool
+curl -b "$PF_JAR" -s http://localhost:8080/api/admin/failed-events/<failedEventId> | python3 -m json.tool
 
 # The message itself, with the origin metadata Spring stamped into the headers
 docker compose exec redpanda rpk topic consume carrier-tracking-events-dlt -n 5 --offset start
@@ -212,7 +220,7 @@ The `errorCategory` field answers what to do next:
 **Recovery.**
 
 ```bash
-curl -s -X POST http://localhost:8080/api/admin/failed-events/<failedEventId>/retry | python3 -m json.tool
+curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -s -X POST http://localhost:8080/api/admin/failed-events/<failedEventId>/retry | python3 -m json.tool
 ```
 
 A non-retryable category returns 409 with the category. There is no bulk replay — retry is one event
@@ -401,7 +409,7 @@ from the outside, and three of them are correct behaviour.
 **Step 1 — is the event in history at all?**
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$ID/events?size=100" | python3 -m json.tool
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$ID/events?size=100" | python3 -m json.tool
 ```
 
 If it is missing, this is problem 4 or problem 5 above: it never arrived, or it failed. Stop here.
@@ -413,7 +421,7 @@ Then the system is working. The event arrived with a sequence number lower than 
 without moving the current status. A backfilled scan must not un-deliver a parcel.
 
 ```bash
-curl -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
+curl -b "$PF_JAR" -s "http://localhost:8080/api/shipments/$ID/events?size=100" \
   | python3 -c 'import sys,json;[print(e["sequenceNumber"], e["normalizedEventType"], e["processingStatus"]) for e in json.load(sys.stdin)["content"]]'
 ```
 
@@ -424,7 +432,7 @@ Compare against the shipment's `last_sequence_number`.
 Then the answer is almost certainly the cache. Compare the API against the database:
 
 ```bash
-curl -s http://localhost:8080/api/shipments/$ID | python3 -c 'import sys,json;print("api:", json.load(sys.stdin)["currentStatus"])'
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID | python3 -c 'import sys,json;print("api:", json.load(sys.stdin)["currentStatus"])'
 docker compose exec postgres psql -U parcelflow -d parcelflow -t \
   -c "select current_status from shipments where shipment_id = '$ID'"
 docker compose exec redis redis-cli get "parcelflow:shipment-tracking:$ID"
@@ -447,3 +455,22 @@ Statuses are not ranked, and not every event type maps to a distinct status. `SP
 `ARRIVED_AT_FACILITY`, which repeats many times in a journey; two consecutive `SP_DEPOT` scans leave
 the status unchanged and both are applied. Check what the carrier code actually normalizes to in
 [event-processing.md](event-processing.md#2-normalization).
+
+---
+
+## 11. Signing in does not work
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `docker compose up` fails: *required variable PARCELFLOW_OIDC_CLIENT_SECRET is missing* | no local secrets | `./scripts/init-local-secrets.sh` |
+| Login page: *Identity provider unavailable* | Keycloak not up yet, or unreachable from the service | `docker compose ps keycloak` (wait for healthy); `docker compose logs tracking-service \| grep -i discovery` |
+| Keycloak page: *Invalid parameter: redirect_uri* | the UI was opened on an origin not registered in the realm (e.g. `127.0.0.1`, or a changed `FRONTEND_PORT`) | use `http://localhost:8081` / `:4200`, or add the exact URI to the `parcelflow-bff` client |
+| Keycloak: *Invalid username or password* right after changing `.env` | the realm is imported only when the container is created | `docker compose up -d --force-recreate keycloak tracking-service` |
+| Login page: *Sign-in did not complete* | state/nonce/issuer validation failed, or the client secret differs between Keycloak and the service | check both containers were recreated after a secret change; service log line `OIDC login failed` |
+| Login page: *This account cannot use ParcelFlow* | no ParcelFlow role, both roles, or a RETAILER without exactly one valid `retailer_id` | fix the user in the Keycloak admin console; the service logs `Login refused for subject <sub>: <REASON>` |
+| Every API call is 401 after a rebuild | sessions are in memory; recreating the container signs everyone out | sign in again |
+| POSTs fail with 403 `csrf-token-invalid` from curl | missing or stale `X-XSRF-TOKEN` header | send the session's token from `GET /api/auth/csrf` (same cookie jar; there is no CSRF cookie), see [security.md §11](security.md#11-calling-the-api-from-a-terminal) |
+| Signed out while a shipment page was open | 30 minutes without interacting: background polling does not keep the session alive; or 8 hours since login | sign in again; see [security.md §5](security.md#5-sessions) |
+
+Issuer and hostname background: [security.md §9](security.md#9-hostnames-redirects-and-docker).
+

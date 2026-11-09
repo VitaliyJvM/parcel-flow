@@ -38,6 +38,7 @@ correct while the stream misbehaves.
 | **2** | Kafka, carrier simulator, event consumer, normalization, tracking history | ✅ Complete |
 | **3** | Idempotency, out-of-order handling, retries, DLQ, notifications, Redis cache | ✅ Complete |
 | **4** | Metrics, alerting, structured logging, tracing, Prometheus + Grafana, k6 load test, CI, quality gates, docs | ✅ Complete — 238 tests passing |
+| **Auth** | OIDC login via Keycloak (BFF, server-side session), ADMIN / RETAILER roles, backend-enforced retailer isolation, CSRF, RP-initiated logout | ✅ Complete — see [docs/security.md](docs/security.md) |
 
 A complete, resilient, observable vertical slice: register a parcel over HTTP, have a carrier publish
 its own event codes to Kafka, watch them get normalized and applied, and read the resulting status,
@@ -80,7 +81,8 @@ flowchart LR
     CONS --> PG
     CONS -->|invalidate| RD
 
-    Client(["Retailer / consumer"]) --> API
+    Client(["Browser: Angular UI"]) -->|"HttpOnly session cookie<br/>(no tokens)"| API
+    API <-->|"OIDC login<br/>(BFF, PKCE)"| KC["Keycloak"]
     API --> PG
     API --> RD
 
@@ -118,6 +120,8 @@ its own deployment.
 | Cache | Redis 7, via Spring Cache |
 | API docs | springdoc-openapi 3.1 (OpenAPI 3.1) |
 | Observability | Spring Boot Actuator, Micrometer, Prometheus, Grafana, Micrometer Tracing (Brave) |
+| Security | Spring Security 7: OAuth2 Login (OIDC, PKCE), server-side HTTP sessions, SPA CSRF |
+| Identity provider | Keycloak 26.8 (local, development mode), realm imported from `keycloak/realm/` |
 | Logging | ECS-structured JSON via Spring Boot's built-in structured logging |
 | Backend testing | JUnit 6, AssertJ, MockMvc, Awaitility, Testcontainers 2 |
 | **Frontend** | |
@@ -145,8 +149,15 @@ to `spring-boot-starter-webmvc-test`, and Jackson 3 (`tools.jackson`) is the def
 ### Everything in Docker
 
 ```bash
+./scripts/init-local-secrets.sh            # once: Keycloak client secret + local passwords into .env
+./scripts/init-local-secrets.sh --print    # shows the local login passwords
 docker compose up --build
 ```
+
+Then open **http://localhost:8081** and sign in as `ops.admin` (ADMIN), `retailer.alpha` or
+`retailer.beta` (RETAILER, two different retailers). Compose refuses to start until the secrets
+exist; none of them is in Git. Authentication, roles and retailer isolation are described in
+[docs/security.md](docs/security.md).
 
 Compose gates startup on health checks: the service waits for PostgreSQL's `pg_isready` and
 Redpanda's `rpk cluster health`, and its own check hits `/actuator/health/readiness`, so it reports
@@ -158,16 +169,18 @@ docker compose logs -f tracking-service
 docker compose down        # add -v to drop the database and broker volumes
 ```
 
-Every port is published on **127.0.0.1 only**: nothing in this stack has authentication, so none of
-it should be reachable from the network your laptop is on.
+Every port is published on **127.0.0.1 only**. The web UI and the API require an OIDC login, but the
+infrastructure around them (Grafana, Prometheus, Redis, Redpanda, Keycloak in development mode) does
+not, so none of it should be reachable from the network your laptop is on.
 
 | Service | URL |
 |---|---|
-| **Web UI (Angular)** | **http://localhost:8081** — nginx serving the UI and proxying `/api/` |
-| API | http://localhost:8080 |
+| **Web UI (Angular)** | **http://localhost:8081** — nginx serving the UI, proxying `/api/` and the login/logout endpoints |
+| **Keycloak** | **http://localhost:8180** — realm `parcelflow`; admin console at `/admin` (user `admin`, `KEYCLOAK_ADMIN_PASSWORD`) |
+| API | http://localhost:8080 — same session, CSRF and role checks as through nginx |
 | Swagger UI | http://localhost:8080/swagger-ui.html |
 | OpenAPI JSON | http://localhost:8080/v3/api-docs |
-| Health (everything, including Redis) | http://localhost:8080/actuator/health |
+| Health (everything, including Redis) | http://localhost:8080/actuator/health — component details for an ADMIN session only |
 | Liveness | http://localhost:8080/actuator/health/liveness |
 | Readiness (PostgreSQL + Kafka) | http://localhost:8080/actuator/health/readiness |
 | Metrics, Prometheus format | http://localhost:8080/actuator/prometheus |
@@ -197,19 +210,18 @@ open http://localhost:8081
 cd frontend && nvm use && npm ci && npm start   # http://localhost:4200, proxies /api to :8080
 ```
 
-It is built with npm, independently of Gradle. It is a **local, unauthenticated demo**: hiding a
-button in the UI is not access control, and the API — including `/api/admin/**` — stays open to
-anyone who can reach it. See
-[docs/analysis/angular-frontend-implementation.md](docs/analysis/angular-frontend-implementation.md)
-for the architecture, test results and what must change before any public deployment.
+It is built with npm, independently of Gradle. Sign-in goes through the tracking service to Keycloak
+(the browser never holds a token); an ADMIN sees every retailer, failed events and the simulator
+command builder, a RETAILER only their own retailer. The UI only decides what to show: every API
+request is authorized by the backend. See [docs/security.md](docs/security.md).
 
 ### Locally against containerized infrastructure
 
 ```bash
-cp .env.example .env                 # local configuration; git-ignored, Compose reads it itself
-docker compose up -d postgres redpanda
+./scripts/init-local-secrets.sh      # creates .env (git-ignored) with the Keycloak secrets
+docker compose up -d postgres redpanda keycloak
 set -a && source .env && set +a      # bootRun does not read .env, so export it
-./gradlew :tracking-service:bootRun
+SPRING_PROFILES_ACTIVE=local ./gradlew :tracking-service:bootRun   # local = plain-HTTP cookie settings
 ```
 
 `application.yml` carries no database credentials — it is packaged into the jar and the image, so a
@@ -221,7 +233,7 @@ deployment injects them from its secret store. Without them the connection fails
 ### Tests and quality gates
 
 ```bash
-./gradlew test                            # 238 tests: unit + integration
+./gradlew test                            # 327 tests: unit + integration, incl. a real Keycloak login
 ./gradlew checkstyleMain checkstyleTest   # style; violations fail the build
 ./gradlew jacocoTestReport                # coverage, per module
 ./gradlew build                           # all of the above, plus the jars
@@ -286,8 +298,14 @@ version follows.
 ```bash
 docker compose up --build -d
 
+# The API accepts a browser session only. Sign in once through the real OIDC flow and reuse the
+# cookie jar (docs/security.md §11). PF_XSRF is the CSRF token every POST must send.
+set -a && source .env && set +a
+scripts/oidc-login.sh http://localhost:8080 ops.admin PARCELFLOW_ADMIN_PASSWORD /tmp/pf.jar >/dev/null
+export PF_JAR=/tmp/pf.jar PF_XSRF="$(curl -s -b /tmp/pf.jar http://localhost:8080/api/auth/csrf | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+
 # 1. A retailer registers a parcel
-SHIPMENT_ID=$(curl -s -X POST http://localhost:8080/api/shipments \
+SHIPMENT_ID=$(curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -s -X POST http://localhost:8080/api/shipments \
   -H 'Content-Type: application/json' \
   -d '{"retailerId":"retailer-42","customerId":"cust-9f13",
        "trackingNumber":"SP100000000042","carrierCode":"SWIFTPOST"}' \
@@ -303,10 +321,10 @@ docker compose run --rm carrier-simulator \
 
 # 3. The parcel is now DELIVERED, and version is 8 — one optimistic-lock
 #    increment per applied event
-curl -s http://localhost:8080/api/shipments/$SHIPMENT_ID
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$SHIPMENT_ID
 
 # 4. Full history, oldest first, with both readings of every scan
-curl -s http://localhost:8080/api/shipments/$SHIPMENT_ID/events
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$SHIPMENT_ID/events
 ```
 
 Swap `--carrier=PACIFICA` (with a `PACIFICA` shipment) to watch a completely different carrier
@@ -329,12 +347,12 @@ docker compose run --rm carrier-simulator --shipment-id=$ID --tracking-number=SP
 docker compose run --rm carrier-simulator --shipment-id=$ID --tracking-number=SP-I \
   --carrier=SWIFTPOST --scenario=INVALID_EVENT --seed=11
 
-curl -s 'http://localhost:8080/api/admin/failed-events'
+curl -b "$PF_JAR" -s 'http://localhost:8080/api/admin/failed-events'
 docker compose exec redpanda rpk topic consume carrier-tracking-events-dlt -n 1
 
 # Kill the cache — reads and ingestion keep working, readiness stays UP
 docker compose stop redis
-curl -s http://localhost:8080/api/shipments/$ID
+curl -b "$PF_JAR" -s http://localhost:8080/api/shipments/$ID
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/actuator/health/readiness
 docker compose start redis
 ```
@@ -350,7 +368,7 @@ Scenarios: `NORMAL`, `DUPLICATE`, `OUT_OF_ORDER`, `INVALID_EVENT`, `UNKNOWN_CARR
 Register a shipment:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/shipments \
+curl -b "$PF_JAR" -H "X-XSRF-TOKEN: $PF_XSRF" -i -X POST http://localhost:8080/api/shipments \
   -H 'Content-Type: application/json' \
   -d '{
         "retailerId": "retailer-42",
@@ -383,8 +401,8 @@ Location: /api/shipments/00c5356b-8b0b-47e5-b88c-1e504dd2bf34
 Read current status, and list a retailer's parcels:
 
 ```bash
-curl http://localhost:8080/api/shipments/00c5356b-8b0b-47e5-b88c-1e504dd2bf34
-curl 'http://localhost:8080/api/retailers/retailer-42/shipments?page=0&size=20&status=IN_TRANSIT'
+curl -b "$PF_JAR" http://localhost:8080/api/shipments/00c5356b-8b0b-47e5-b88c-1e504dd2bf34
+curl -b "$PF_JAR" 'http://localhost:8080/api/retailers/retailer-42/shipments?page=0&size=20&status=IN_TRANSIT'
 ```
 
 Find a shipment by the carrier's tracking number. A tracking number is unique per carrier, not
@@ -392,7 +410,7 @@ globally, so the carrier is part of the key. Matching is exact — case-sensitiv
 same comparison the duplicate-registration constraint makes:
 
 ```bash
-curl 'http://localhost:8080/api/shipments/lookup?carrierCode=SWIFTPOST&trackingNumber=SP100000000042'
+curl -b "$PF_JAR" 'http://localhost:8080/api/shipments/lookup?carrierCode=SWIFTPOST&trackingNumber=SP100000000042'
 ```
 
 The body is the same `ShipmentResponse` as a read by id. A miss is a `404` with the
@@ -445,7 +463,7 @@ Fetch tracking history — each entry carries both ParcelFlow's normalized readi
 own code:
 
 ```bash
-curl 'http://localhost:8080/api/shipments/{shipmentId}/events?page=0&size=50'
+curl -b "$PF_JAR" 'http://localhost:8080/api/shipments/{shipmentId}/events?page=0&size=50'
 ```
 
 ```json
@@ -491,10 +509,12 @@ history because they are real observations.
 | `GET` | `/api/admin/failed-events/{id}` | 3 |
 | `POST` | `/api/admin/failed-events/{id}/retry` | 3 |
 
-The `/api/admin/**` subtree is **unauthenticated in this portfolio build**. It exposes failure detail
-across every retailer and can trigger reprocessing, so a real deployment needs it behind an operator
-role and off the public internet. The path prefix exists so the whole subtree can be secured with one
-rule.
+Every endpoint needs an authenticated session (401 otherwise) and every POST a CSRF token. The
+`/api/admin/**` subtree is **ADMIN only** (403 for a RETAILER): it exposes failure detail across every
+retailer and can trigger reprocessing. A RETAILER sees only their own retailer's shipments; another
+retailer's shipment answers 404 exactly like a nonexistent one. `GET /api/auth/session` and
+`GET /api/auth/csrf` are the two public endpoints the UI uses before it knows who is signed in. See
+[docs/security.md](docs/security.md#4-roles-and-retailer-isolation).
 
 ---
 
@@ -567,6 +587,8 @@ open http://localhost:9090/alerts
 - [docs/performance-results.md](docs/performance-results.md) — measured load test results and the
   environment they came from
 - [docs/demo.md](docs/demo.md) — a twelve-step, five-to-ten-minute demonstration
+- [docs/security.md](docs/security.md) — OIDC login (BFF), sessions, CSRF, roles and retailer
+  isolation, Keycloak setup, Docker hostnames, limitations, and the Phase 3 service-to-service boundary
 - [docs/interview-guide.md](docs/interview-guide.md) — architecture walkthrough and honest answers to
   ten distributed-systems questions
 
@@ -579,14 +601,12 @@ Known limitations, stated plainly:
 - **One consumer instance.** `concurrency: 3` gives a thread per partition within one instance.
   Processing is idempotent enough for a rebalance to be safe, but that is argued rather than
   demonstrated — there is no multi-instance rebalance test.
-- **`/api/admin/**` is unauthenticated.** Out of MVP scope. It exposes cross-retailer failure detail
-  and can trigger reprocessing. The web UI shows these screens with a warning; it does not and
-  cannot protect them.
-- **No retailer isolation.** Any caller can list any retailer's shipments by changing the path; the
-  UI's retailer selector is a view filter. Likewise, `GET /api/shipments/lookup` answers anyone who
-  knows a carrier and tracking number. `ShipmentService.lookupShipment` is the single place the
-  future ownership check goes, and it should answer a non-owner with the same `404` as a miss so
-  tracking numbers cannot be enumerated across retailers.
+- **Authentication is local-grade around the edges.** Keycloak runs in development mode, cookies are
+  not `Secure` over local HTTP, sessions are in memory on one instance, and there is no OIDC
+  back-channel logout yet. The full list, and what production needs, is in
+  [docs/security.md](docs/security.md#13-limitations).
+- **A duplicate registration still says the number is taken.** Tracking numbers are unique per
+  carrier across all retailers, so a 409 reveals that much — never whose shipment it is or its id.
 - **The event contract is declared twice**, once per module, deliberately — see
   [docs/event-processing.md](docs/event-processing.md#the-contract-is-not-a-shared-class). The two
   copies are kept in step by hand; a schema registry is the real fix.
@@ -604,15 +624,19 @@ Known limitations, stated plainly:
   sustained ~195 events/s with zero consumer lag because that is what it was asked for. A
   ramping-arrival-rate run that climbs until lag grows is the missing experiment.
 - **Alert thresholds are starting points**, chosen for a laptop, not derived from an error budget.
-- **Actuator shares the API port** with health details on. Fine locally, reconnaissance if exposed; a
-  real deployment would move management to a port that is not publicly routed.
+- **Actuator shares the API port.** Health status and the Prometheus scrape are public on it; details
+  and every other actuator endpoint need an ADMIN session. A real deployment would move management to
+  a port that is not publicly routed.
 - **The load-testing publish endpoint exists.** Disabled by default, guarded by a property, tested to
-  be absent unless enabled — and it would not ship at all in a real deployment.
+  be absent unless enabled, and ADMIN + CSRF even when enabled — and it would not ship at all in a
+  real deployment.
 - **Resilience experiments and the load run are manual.** Documented and reproducible, not automated.
 
 Candidate next steps: multiple consumer instances with a rebalance test, a schema registry, an OTLP
 exporter and a trace backend, bulk DLT replay, a notification dispatcher, extracting `notification`
-into its own service, and authentication with retailer scoping in front of the API and the web UI.
+into its own service, and stateless OAuth2 client-credentials authentication for a browser-triggered
+carrier simulator service (Phase 3; the boundary is described in
+[docs/security.md](docs/security.md#15-phase-3-boundary-service-to-service-authentication)).
 
 ---
 
@@ -622,12 +646,13 @@ into its own service, and authentication with retailer scoping in front of the A
 parcel-flow/
 ├── build.gradle                 # shared config, quality plugins
 ├── settings.gradle
-├── docker-compose.yml           # postgres, redpanda, redis, service, frontend, prometheus, grafana, k6
+├── docker-compose.yml           # postgres, redpanda, redis, keycloak, service, frontend, prometheus, grafana, k6
 ├── .github/workflows/ci.yml     # compile, style, tests, images, frontend, e2e, advisory scans
 ├── frontend/                    # Angular 22 web UI (npm, not Gradle), nginx image, Playwright e2e
 ├── config/
 │   ├── checkstyle/              # ruleset and its documented suppressions
 │   └── owasp/                   # dependency-check suppressions (empty, and says why)
+├── keycloak/realm/              # reproducible local Keycloak realm (roles, client, test users; no secrets)
 ├── monitoring/
 │   ├── prometheus/              # scrape config and 10 alert rules
 │   └── grafana/                 # provisioned datasource and dashboard
@@ -644,6 +669,7 @@ parcel-flow/
 │       │   ├── shipment/        # aggregate, service, REST API
 │       │   ├── tracking/        # event consumer, history, error classification, failed events
 │       │   ├── notification/    # milestone rules and notification records
+│       │   ├── security/        # OIDC client (BFF), identity mapping, security filter chain
 │       │   ├── infrastructure/  # framework wiring, health indicators, observability
 │       │   └── shared/          # cross-module API concerns
 │       ├── main/resources/db/migration/

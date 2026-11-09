@@ -5,6 +5,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ca.vm.parcelflow.security.ParcelFlowRole;
+import ca.vm.parcelflow.support.security.WithParcelFlowUser;
 import ca.vm.parcelflow.carrier.CarrierCode;
 import ca.vm.parcelflow.shipment.ShipmentRepository;
 import ca.vm.parcelflow.shipment.domain.Shipment;
@@ -29,6 +31,9 @@ import org.springframework.test.web.servlet.ResultActions;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+// Pre-dates authentication. ADMIN is the role whose view of the API is what these tests always
+// assumed: every retailer, plus the admin endpoints. Retailer isolation has its own tests.
+@WithParcelFlowUser(role = ParcelFlowRole.ADMIN)
 class TrackingHistoryApiIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired

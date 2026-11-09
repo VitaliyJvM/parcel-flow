@@ -10,8 +10,9 @@ name: CI
 #                  ADVISORY   ...plus a SonarQube Cloud step, see below
 #   package        BLOCKING   Docker image builds (API + web UI), Compose validation, k6 parse
 #   frontend       BLOCKING   Angular lint, unit tests (Vitest), production build
-#   e2e            BLOCKING   OpenAPI snapshot vs live service; Playwright against the real
-#                             Compose stack + carrier simulator
+#   e2e            BLOCKING   OpenAPI snapshot vs live service; OIDC login/logout smoke test;
+#                             Playwright against the real Compose stack (Keycloak included) +
+#                             carrier simulator, signing in through the real Keycloak login form
 #   dependencies   ADVISORY   OWASP Dependency-Check; only runs when an NVD_API_KEY secret exists
 #
 # The jobs are independent and run in parallel; none of them needs another's output. The frontend
@@ -25,6 +26,12 @@ name: CI
 #
 # The advisory jobs and the advisory step use continue-on-error deliberately and say so in their own
 # comments. Nothing that verifies correctness is allowed to be advisory.
+#
+# Credentials. The Compose stack refuses to start without a Keycloak client secret and local user
+# passwords (docker-compose.yml uses `:?`). The jobs that start or validate it set the values below:
+# throwaway, CI-only constants for a Keycloak that lives for the length of one job on one runner,
+# bound to 127.0.0.1, holding no data. They are deliberately not repository secrets — a secret would
+# imply they protect something. They protect nothing outside the runner and are used nowhere else.
 
 on:
   push:
@@ -147,6 +154,12 @@ jobs:
     name: Image, Compose and k6 validation
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # CI-only throwaway values; see "Credentials" at the top of this file.
+    env:
+      PARCELFLOW_OIDC_CLIENT_SECRET: ci-only-client-secret-not-a-real-secret
+      PARCELFLOW_ADMIN_PASSWORD: ci-only-admin-password
+      PARCELFLOW_RETAILER_PASSWORD: ci-only-retailer-password
+      KEYCLOAK_ADMIN_PASSWORD: ci-only-keycloak-admin-password
 
     steps:
       - name: Check out
@@ -233,6 +246,13 @@ jobs:
     name: End-to-end (Playwright, real stack)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # CI-only throwaway values; see "Credentials" at the top of this file. Read by Compose (realm
+    # import, tracking service) and by the Playwright login helper.
+    env:
+      PARCELFLOW_OIDC_CLIENT_SECRET: ci-only-client-secret-not-a-real-secret
+      PARCELFLOW_ADMIN_PASSWORD: ci-only-admin-password
+      PARCELFLOW_RETAILER_PASSWORD: ci-only-retailer-password
+      KEYCLOAK_ADMIN_PASSWORD: ci-only-keycloak-admin-password
 
     steps:
       - name: Check out
@@ -246,11 +266,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Start the stack
-        # The tracking service, its dependencies and the web UI, exactly as a developer runs them.
-        # The simulator image is built up front so the first test does not pay for it.
+        # The tracking service, its dependencies, Keycloak and the web UI, exactly as a developer
+        # runs them. The simulator image is built up front so the first test does not pay for it.
         run: |
           docker compose --profile simulator build tracking-service carrier-simulator frontend
-          docker compose up -d --wait postgres redpanda redis tracking-service frontend
+          docker compose up -d --wait postgres redpanda redis keycloak tracking-service frontend
 
       - name: Install frontend dependencies and browser
         working-directory: frontend
@@ -276,16 +296,37 @@ jobs:
             exit 1
           fi
 
+      - name: OIDC login and logout smoke test (curl, through nginx)
+        # The real authorization code flow with no browser: BFF login endpoint, Keycloak's HTML
+        # form, the callback, an authorized API call, an unauthorized one, RP-initiated logout.
+        # A failure here points at configuration (issuer, redirect URIs, forwarded headers)
+        # before Playwright's longer tests start.
+        run: |
+          jar="$(mktemp)"
+          http_status='%{http_code}'
+          scripts/oidc-login.sh http://localhost:8081 retailer.alpha PARCELFLOW_RETAILER_PASSWORD "$jar"
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/retailers/alpha-goods/shipments)" = 200
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/retailers/beta-supplies/shipments)" = 403
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/admin/failed-events)" = 403
+          test "$(curl -s -o /dev/null -w "$http_status" http://127.0.0.1:8080/api/retailers/alpha-goods/shipments)" = 401
+          token="$(curl -s -b "$jar" -c "$jar" http://localhost:8081/api/auth/csrf | jq -r .token)"
+          end_session="$(curl -s -o /dev/null -w '%{redirect_url}' -b "$jar" -c "$jar" --data-urlencode "_csrf=$token" http://localhost:8081/logout)"
+          case "$end_session" in http://localhost:8180/realms/parcelflow/protocol/openid-connect/logout?*) ;; *) echo "unexpected logout redirect"; exit 1 ;; esac
+          test "$(curl -s -o /dev/null -w '%{redirect_url}' -b "$jar" "$end_session")" = http://localhost:8081/signed-out
+          test "$(curl -s -o /dev/null -w "$http_status" -b "$jar" http://localhost:8081/api/retailers/alpha-goods/shipments)" = 401
+          rm -f "$jar"
+
       - name: Playwright
         # Against the nginx container, i.e. the production build and the production proxy rules.
+        # localhost, not 127.0.0.1: the OIDC redirect URIs registered in Keycloak are exact.
         working-directory: frontend
         env:
-          E2E_BASE_URL: http://127.0.0.1:8081
+          E2E_BASE_URL: http://localhost:8081
         run: npm run e2e
 
       - name: Service logs on failure
         if: failure()
-        run: docker compose logs --no-color tracking-service frontend | tail -n 400
+        run: docker compose logs --no-color tracking-service frontend keycloak | tail -n 600
 
       - name: Upload the Playwright report
         if: always()

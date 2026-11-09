@@ -1,0 +1,48 @@
+// Shared by the login and signed-out pages, which render without the application shell.
+:host {
+  display: block;
+}
+
+.pf-auth-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  box-sizing: border-box;
+  background: var(--mat-sys-surface-container-low);
+  outline: none;
+}
+
+.pf-auth-card {
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  overflow: hidden;
+
+  mat-progress-bar {
+    position: absolute;
+    inset: 0 0 auto 0;
+  }
+
+  .pf-title {
+    margin: 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  button {
+    align-self: flex-start;
+  }
+}
+
+.pf-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: var(--mat-sys-title-medium);
+  color: var(--mat-sys-primary);
+}

@@ -1,0 +1,22 @@
+# Local development over plain HTTP: `./gradlew :tracking-service:bootRun` with
+# SPRING_PROFILES_ACTIVE=local, and the Docker Compose stack (which sets the same profile).
+#
+# Relaxes exactly what http://localhost cannot satisfy. Everything else — CSRF, PKCE, issuer
+# validation, HttpOnly, SameSite, session fixation protection, retailer isolation — is identical to
+# production. Never activate this profile anywhere that is reachable from another machine.
+
+server:
+  servlet:
+    session:
+      cookie:
+        # A browser drops a Secure cookie set over http://, and the __Host- prefix requires Secure.
+        name: PARCELFLOW_SESSION
+        secure: false
+
+parcelflow:
+  security:
+    # No TLS on localhost.
+    require-https: false
+    oidc:
+      # The Compose Keycloak, as the browser on this machine reaches it.
+      issuer-uri: ${PARCELFLOW_OIDC_ISSUER_URI:http://localhost:8180/realms/parcelflow}

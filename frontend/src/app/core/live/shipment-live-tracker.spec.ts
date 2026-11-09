@@ -12,6 +12,7 @@ import {
   trackingEvent,
 } from '../../../testing/http';
 import type { NotificationResponse, ShipmentResponse, TrackingEventResponse } from '../api/models';
+import { BACKGROUND_REQUEST } from '../auth/user-activity';
 import { PAGE_VISIBLE } from './page-visibility';
 import { POLL_CONFIG, PollConfig } from './poll-policy';
 import { ShipmentLiveTracker } from './shipment-live-tracker';
@@ -92,6 +93,37 @@ describe('ShipmentLiveTracker', () => {
     answerNotifications([]);
     await vi.advanceTimersByTimeAsync(0);
   }
+
+  it('marks scheduled ticks as background; a tick the user started (open, refresh) is not', async () => {
+    const quiet = shipment({ version: 1, currentStatus: 'IN_TRANSIT' });
+    function answerTick(background: boolean): void {
+      const shipmentReq = http.expectOne(SHIPMENT_URL);
+      const eventsReq = http.expectOne(isProbe(EVENTS_URL));
+      const notificationsReq = http.expectOne(isProbe(NOTIFICATIONS_URL));
+      for (const r of [shipmentReq, eventsReq, notificationsReq]) {
+        expect(r.request.context.get(BACKGROUND_REQUEST)).toBe(background);
+      }
+      shipmentReq.flush(quiet);
+      eventsReq.flush(countPage(1));
+      notificationsReq.flush(countPage(0));
+    }
+
+    tracker.track(SHIPMENT_ID);
+    answerTick(false);
+    expect(answerEvents([trackingEvent()]).request.context.get(BACKGROUND_REQUEST)).toBe(false);
+    const notifications = http.expectOne(isFull(NOTIFICATIONS_URL));
+    expect(notifications.request.context.get(BACKGROUND_REQUEST)).toBe(false);
+    notifications.flush(page([]));
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(CONFIG.fastMs);
+    answerTick(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    tracker.refresh();
+    answerTick(false);
+    await vi.advanceTimersByTimeAsync(0);
+  });
 
   it('loads shipment, full history and notifications on start', async () => {
     await initialLoad();

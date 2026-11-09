@@ -51,8 +51,10 @@ is worse than no claim.
 9457 `application/problem+json` with a stable `type` URI so clients branch on the error kind rather
 than parsing prose. Duplicate registration relies on the `(carrier_code, tracking_number)` unique
 constraint rather than a `SELECT`-then-`INSERT`, which two concurrent requests could both pass.
-`/api/admin/**` is unauthenticated in this build — a known gap, with the path prefix chosen so the
-whole subtree can be secured by one rule.
+Every `/api/**` call needs an OIDC browser session (the service is the BFF: tokens stay server-side,
+the browser holds an HttpOnly cookie); `/api/admin/**` needs ADMIN, and a RETAILER's access to another
+retailer's shipment answers the same 404 as a shipment that does not exist. See
+[security.md](security.md).
 
 **Event ingestion.** A `@KafkaListener` on `carrier-tracking-events`, three threads, one per
 partition. Every event is keyed by shipment id, so one parcel's scans land on one partition and
@@ -319,7 +321,7 @@ rules the merge function. The current rules were built to be exactly that kind o
 
 **Operations.** Alertmanager and an on-call rotation. A trace backend with sampling well under 100%.
 Log shipping with retention. Management endpoints on a port that is not publicly routed. Secrets
-from a secret manager, not a Compose file. Authentication in front of `/api/admin/**`. A schema
+from a secret manager, not a Compose file. A production Keycloak and a shared session store. A schema
 registry, so the event contract stops being two hand-synchronised copies.
 
 **And the things that would go first regardless of regions:** a multi-instance rebalance test,
@@ -335,7 +337,7 @@ Worth being able to list these without prompting — being asked for a limitatio
 worse answer than any of them.
 
 * One consumer instance; the rebalance-safety argument is not demonstrated by a test.
-* `/api/admin/**` is unauthenticated.
+* Keycloak runs in development mode; sessions are in memory on one instance; no back-channel logout.
 * The event contract is declared twice, once per module, and kept in step by hand.
 * No bulk DLT replay.
 * `sequenceNumber` is trusted.

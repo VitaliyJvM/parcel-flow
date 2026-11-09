@@ -10,6 +10,7 @@ import {
   SHIPMENT_ID,
   trackingEvent,
 } from '../../../../testing/http';
+import { signInAs } from '../../../../testing/auth';
 import { DEFAULT_POLL_CONFIG, POLL_CONFIG } from '../../../core/live/poll-policy';
 import { ShipmentDetailPage } from './shipment-detail-page';
 
@@ -44,6 +45,7 @@ describe('ShipmentDetailPage', () => {
         { provide: POLL_CONFIG, useValue: { ...DEFAULT_POLL_CONFIG, fastMs: 600_000, slowMs: 600_000 } },
       ],
     });
+    signInAs('ADMIN');
     http = TestBed.inject(HttpTestingController);
     fixture = TestBed.createComponent(ShipmentDetailPage);
     // Attached, so focus() and document.activeElement behave as in a browser.

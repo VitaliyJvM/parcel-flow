@@ -8,10 +8,25 @@ import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface ShipmentRepository extends JpaRepository<Shipment, UUID> {
 
     Optional<Shipment> findByCarrierCodeAndTrackingNumber(CarrierCode carrierCode, String trackingNumber);
+
+    /**
+     * The owning retailer of a shipment, without loading the aggregate. Backs the access check in
+     * front of the tracking-history and notification reads.
+     */
+    @Query("select s.retailerId from Shipment s where s.shipmentId = :shipmentId")
+    Optional<String> findRetailerIdByShipmentId(@Param("shipmentId") UUID shipmentId);
+
+    @Query("""
+            select s.retailerId from Shipment s
+            where s.carrierCode = :carrierCode and s.trackingNumber = :trackingNumber""")
+    Optional<String> findRetailerIdByCarrierCodeAndTrackingNumber(
+            @Param("carrierCode") CarrierCode carrierCode, @Param("trackingNumber") String trackingNumber);
 
     Page<Shipment> findByRetailerId(String retailerId, Pageable pageable);
 

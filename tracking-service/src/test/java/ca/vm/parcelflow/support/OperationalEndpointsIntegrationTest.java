@@ -2,11 +2,14 @@ package ca.vm.parcelflow.support;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ca.vm.parcelflow.security.ParcelFlowRole;
+import ca.vm.parcelflow.support.security.WithParcelFlowUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +33,9 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+// Pre-dates authentication. ADMIN is the role whose view of the API is what these tests always
+// assumed: every retailer, plus the admin endpoints. Retailer isolation has its own tests.
+@WithParcelFlowUser(role = ParcelFlowRole.ADMIN)
 class OperationalEndpointsIntegrationTest extends FullStackIntegrationTest {
 
     @Autowired
@@ -127,7 +133,7 @@ class OperationalEndpointsIntegrationTest extends FullStackIntegrationTest {
     @Test
     @DisplayName("a request without a correlation id is given one")
     void generatesACorrelationIdWhenTheCallerSendsNone() throws Exception {
-        String generated = mockMvc.perform(post("/api/shipments")
+        String generated = mockMvc.perform(post("/api/shipments").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest())
@@ -141,7 +147,7 @@ class OperationalEndpointsIntegrationTest extends FullStackIntegrationTest {
     @Test
     @DisplayName("the load-testing publish endpoint is not exposed by default")
     void loadTestingEndpointIsDisabledByDefault() throws Exception {
-        mockMvc.perform(post("/internal/load/carrier-events")
+        mockMvc.perform(post("/internal/load/carrier-events").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isNotFound());

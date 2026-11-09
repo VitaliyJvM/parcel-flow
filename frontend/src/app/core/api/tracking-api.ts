@@ -1,6 +1,7 @@
 import { HttpClient, HttpContext, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
+import { BACKGROUND_REQUEST } from '../auth/user-activity';
 import { SKIP_RETRY } from '../http/interceptors';
 import {
   CarrierCode,
@@ -16,9 +17,14 @@ import {
   TrackingEventResponse,
 } from './models';
 
-/** Options shared by every read; `probe` marks a lightweight polling request that must not retry. */
+/**
+ * Options shared by every read. `probe` marks a lightweight polling request that must not retry;
+ * `background` marks a request the application sends on its own (a polling tick), which does not
+ * count as user activity for the session's idle timeout.
+ */
 export interface ReadOptions {
   probe?: boolean;
+  background?: boolean;
 }
 
 function params(values: Record<string, string | number | null | undefined>): HttpParams {
@@ -32,7 +38,12 @@ function params(values: Record<string, string | number | null | undefined>): Htt
 }
 
 function context(options?: ReadOptions): HttpContext | undefined {
-  return options?.probe ? new HttpContext().set(SKIP_RETRY, true) : undefined;
+  if (!options?.probe && !options?.background) {
+    return undefined;
+  }
+  return new HttpContext()
+    .set(SKIP_RETRY, options.probe ?? false)
+    .set(BACKGROUND_REQUEST, options.background ?? false);
 }
 
 /**
@@ -101,7 +112,7 @@ export class ShipmentsApi {
   }
 }
 
-/** Unauthenticated admin endpoints under `/api/admin/failed-events` (see SECURITY notes). */
+/** ADMIN-only endpoints under `/api/admin/failed-events`; a RETAILER session gets 403. */
 @Injectable({ providedIn: 'root' })
 export class FailedEventsApi {
   private readonly http = inject(HttpClient);

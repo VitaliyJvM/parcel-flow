@@ -2,7 +2,8 @@ package ca.vm.parcelflow.notification;
 
 import ca.vm.parcelflow.notification.domain.Notification;
 import ca.vm.parcelflow.notification.domain.NotificationType;
-import ca.vm.parcelflow.shipment.ShipmentService;
+import ca.vm.parcelflow.security.CurrentUser;
+import ca.vm.parcelflow.shipment.ShipmentAccessService;
 import ca.vm.parcelflow.shipment.domain.ShipmentStatus;
 import java.time.Instant;
 import java.util.Optional;
@@ -36,15 +37,15 @@ public class NotificationService {
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
     private final NotificationRepository notificationRepository;
-    private final ShipmentService shipmentService;
+    private final ShipmentAccessService shipmentAccess;
     private final NotificationMetrics metrics;
 
     public NotificationService(
             NotificationRepository notificationRepository,
-            ShipmentService shipmentService,
+            ShipmentAccessService shipmentAccess,
             NotificationMetrics metrics) {
         this.notificationRepository = notificationRepository;
-        this.shipmentService = shipmentService;
+        this.shipmentAccess = shipmentAccess;
         this.metrics = metrics;
     }
 
@@ -92,12 +93,12 @@ public class NotificationService {
     }
 
     /**
-     * @throws ca.vm.parcelflow.shipment.ShipmentNotFoundException if the shipment does not exist,
-     *     so an unknown parcel is a 404 rather than an empty page
+     * @throws ca.vm.parcelflow.shipment.ShipmentNotFoundException if the shipment does not exist
+     *     or is not the viewer's, so an unknown parcel is a 404 rather than an empty page
      */
     @Transactional(readOnly = true)
-    public Page<Notification> findShipmentNotifications(UUID shipmentId, int page, int size) {
-        shipmentService.requireShipmentExists(shipmentId);
+    public Page<Notification> findShipmentNotifications(CurrentUser viewer, UUID shipmentId, int page, int size) {
+        shipmentAccess.requireAccessible(viewer, shipmentId);
         return notificationRepository.findByShipmentId(
                 shipmentId, PageRequest.of(page, size, CHRONOLOGICAL));
     }

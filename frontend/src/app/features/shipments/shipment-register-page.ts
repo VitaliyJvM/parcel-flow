@@ -12,6 +12,7 @@ import { finalize } from 'rxjs';
 import { ApiError, toApiError } from '../../core/api/api-error';
 import { CarrierCode, RegisterShipmentRequest } from '../../core/api/models';
 import { ShipmentsApi } from '../../core/api/tracking-api';
+import { AuthSession } from '../../core/auth/auth-session';
 import { RetailerContext } from '../../core/retailer/retailer-context';
 import { isLocalDateBefore, todayLocalDate } from '../../shared/dates';
 import {
@@ -38,14 +39,23 @@ export type RegisterForm = FormGroup<{
   estimatedDeliveryDate: FormControl<string>;
 }>;
 
-export function createRegisterForm(retailerId: string): RegisterForm {
+/**
+ * @param lockRetailer a RETAILER registers only under their server-assigned retailer, so the field
+ *     is prefilled and disabled. `getRawValue()` still includes it. The backend refuses any other
+ *     value with 403 regardless; the lock only saves the user from a request that cannot succeed.
+ */
+export function createRegisterForm(retailerId: string, lockRetailer = false): RegisterForm {
   const text = (max: number, initial = '') =>
     new FormControl(initial, {
       nonNullable: true,
       validators: [Validators.required, notBlank, Validators.maxLength(max)],
     });
+  const retailer = text(REGISTER_LIMITS.retailerId, retailerId);
+  if (lockRetailer) {
+    retailer.disable();
+  }
   return new FormGroup({
-    retailerId: text(REGISTER_LIMITS.retailerId, retailerId),
+    retailerId: retailer,
     customerId: text(REGISTER_LIMITS.customerId),
     trackingNumber: text(REGISTER_LIMITS.trackingNumber),
     carrierCode: new FormControl<CarrierCode>('SWIFTPOST', {
@@ -93,6 +103,7 @@ export class ShipmentRegisterPage {
   private readonly api = inject(ShipmentsApi);
   private readonly router = inject(Router);
   private readonly retailer = inject(RetailerContext);
+  protected readonly session = inject(AuthSession);
 
   protected readonly limits = REGISTER_LIMITS;
   protected readonly carriers = CARRIERS;
@@ -100,11 +111,20 @@ export class ShipmentRegisterPage {
   protected readonly isOperational = isOperationalCarrier;
   protected readonly today = todayLocalDate();
 
-  protected readonly form = createRegisterForm(this.retailer.retailerId() ?? '');
+  protected readonly form = createRegisterForm(this.retailer.retailerId() ?? '', this.session.isRetailer());
   protected readonly submitting = signal(false);
   /** Errors that did not map onto a field (non-validation failures, unknown fields). */
   protected readonly formError = signal<ApiError | null>(null);
-  protected readonly duplicate = signal<{ carrierCode: CarrierCode; trackingNumber: string } | null>(null);
+  /**
+   * `accessible`: the backend's `existingShipmentAccessible`. False when the number belongs to a
+   * shipment the user may not see (another retailer's), in which case there is nothing to open and
+   * nothing more is disclosed.
+   */
+  protected readonly duplicate = signal<{
+    carrierCode: CarrierCode;
+    trackingNumber: string;
+    accessible: boolean;
+  } | null>(null);
   protected readonly openingExisting = signal(false);
 
   private readonly formValue = toSignal(this.form.valueChanges, { initialValue: this.form.value });
@@ -137,13 +157,13 @@ export class ShipmentRegisterPage {
   }
 
   /**
-   * Resolves the shipment the duplicate collided with and opens it. The existing shipment may
-   * belong to another retailer; the detail page shows whose it is, and the selected retailer is
-   * deliberately left unchanged.
+   * Resolves the shipment the duplicate collided with and opens it — only offered when the backend
+   * said the user may see it. For an admin it may belong to another retailer; the detail page shows
+   * whose it is, and the selected retailer is deliberately left unchanged.
    */
   protected openExisting(): void {
     const d = this.duplicate();
-    if (!d || this.openingExisting()) {
+    if (!d || !d.accessible || this.openingExisting()) {
       return;
     }
     this.formError.set(null);
@@ -163,7 +183,8 @@ export class ShipmentRegisterPage {
       const trackingNumber = error.extension('trackingNumber') ?? request.trackingNumber;
       const echoed = error.extension('carrierCode');
       const carrierCode = CARRIERS.find((c) => c === echoed) ?? request.carrierCode;
-      this.duplicate.set({ carrierCode, trackingNumber });
+      const accessible = error.extensions['existingShipmentAccessible'] === true;
+      this.duplicate.set({ carrierCode, trackingNumber, accessible });
       const control = this.form.controls.trackingNumber;
       control.setErrors({ ...(control.errors ?? {}), duplicate: true });
       control.markAsTouched();

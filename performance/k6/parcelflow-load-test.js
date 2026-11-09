@@ -22,11 +22,28 @@
  *   EVENTS_PER_REQUEST       events batched into one publish call    default 10
  *   DUPLICATE_PERCENTAGE     share of events that are exact repeats  default 10
  *   OUT_OF_ORDER_PERCENTAGE  share that arrive with a stale sequence default 10
+ *   PARCELFLOW_CREDENTIALS_FILE  JSON file with an ADMIN session         required
+ *                            {"cookieName", "session", "csrfToken"} — a file, not variables,
+ *                            so the live session never appears in `docker inspect`
+ *
+ * ── Authentication ───────────────────────────────────────────────────────────────────────────
+ *
+ * The API needs a browser session and CSRF token like any other client. The k6 container cannot
+ * run the OIDC login itself (Keycloak's browser-facing URL is http://localhost:8180, which is not
+ * this container's localhost), so scripts/run-performance-test.sh signs in on the host with
+ * scripts/oidc-login.sh as the local ADMIN, fetches that session's CSRF token from /api/auth/csrf,
+ * and hands both to this container in a mode-0600 file on a read-only mount (never as environment
+ * variables or command-line arguments, which `docker inspect` and `ps` would show). It signs the
+ * session out again when it finishes, including on failure. Every VU reuses that one session: the
+ * load test measures the API, not the identity provider.
  *
  * ── Running it ───────────────────────────────────────────────────────────────────────────────
  *
- *   PARCELFLOW_LOADTESTING_ENABLED=true docker compose up -d
- *   docker compose --profile perf run --rm k6 run /scripts/parcelflow-load-test.js
+ *   ./scripts/run-performance-test.sh      (does all of the below, including the login)
+ *
+ * Running it by hand means reproducing those steps (see the "Sign in" section of
+ * scripts/run-performance-test.sh); there is deliberately no one-liner that puts a session on a
+ * command line.
  *
  * The publish endpoint it uses is disabled by default and must be switched on for the run; see
  * CarrierEventLoadController for why it exists and why it is not something to leave enabled.
@@ -55,6 +72,22 @@ const DUPLICATE_PERCENTAGE = intEnv('DUPLICATE_PERCENTAGE', 10);
 const OUT_OF_ORDER_PERCENTAGE = intEnv('OUT_OF_ORDER_PERCENTAGE', 10);
 
 const RESULTS_DIR = __ENV.RESULTS_DIR || '/results';
+
+// Read once, in the init context (the only place k6 allows open()).
+const CREDENTIALS = __ENV.PARCELFLOW_CREDENTIALS_FILE
+    ? JSON.parse(open(__ENV.PARCELFLOW_CREDENTIALS_FILE))
+    : {};
+const SESSION_COOKIE_NAME = CREDENTIALS.cookieName || 'PARCELFLOW_SESSION';
+const SESSION = CREDENTIALS.session || '';
+// The session-bound CSRF token from GET /api/auth/csrf (there is no CSRF cookie).
+const CSRF_TOKEN = CREDENTIALS.csrfToken || '';
+
+/** Request params carrying the session (and, for writes, the CSRF header). */
+function authed(params, write) {
+    const cookies = { [SESSION_COOKIE_NAME]: SESSION };
+    const headers = Object.assign({}, params.headers || {}, write ? { 'X-XSRF-TOKEN': CSRF_TOKEN } : {});
+    return Object.assign({}, params, { cookies, headers });
+}
 
 /** Never DELIVERED: it is a terminal status, and a delivered parcel would supersede every later
  *  event, which would turn the measured out-of-order share into whatever the journey length was. */
@@ -128,6 +161,15 @@ export const options = {
 // ── Setup: register the shipments, and take a baseline of the service's own counters ──────────
 
 export function setup() {
+    if (!SESSION || !CSRF_TOKEN) {
+        throw new Error('PARCELFLOW_CREDENTIALS_FILE with a session and CSRF token is required; '
+            + 'run ./scripts/run-performance-test.sh, which signs in first');
+    }
+    const session = http.get(`${BASE_URL}/api/auth/session`, authed({ tags: { endpoint: 'session' } }, false));
+    if (session.status !== 200 || session.json('user.role') !== 'ADMIN') {
+        throw new Error(`The supplied session is not an ADMIN session: HTTP ${session.status} ${session.body}`);
+    }
+
     console.log(`Registering ${SHIPMENT_COUNT} shipments at ${BASE_URL}`);
 
     const runId = `${Date.now().toString(36)}`;
@@ -145,7 +187,7 @@ export function setup() {
                 trackingNumber: trackingNumber,
                 carrierCode: 'SWIFTPOST',
             }),
-            { headers: { 'Content-Type': 'application/json' }, tags: { endpoint: 'register' } },
+            authed({ headers: { 'Content-Type': 'application/json' }, tags: { endpoint: 'register' } }, true),
         );
 
         if (response.status !== 201) {
@@ -217,7 +259,7 @@ export function publishEvents(data) {
     const response = http.post(
         `${BASE_URL}/internal/load/carrier-events`,
         JSON.stringify(batch),
-        { headers: { 'Content-Type': 'application/json' }, tags: { endpoint: 'publish' } },
+        authed({ headers: { 'Content-Type': 'application/json' }, tags: { endpoint: 'publish' } }, true),
     );
 
     const accepted = check(response, {
@@ -257,7 +299,7 @@ export function readStatus(data) {
     const shipment = randomShipment(data.shipments);
 
     const response = http.get(`${BASE_URL}/api/shipments/${shipment.id}`,
-        { tags: { endpoint: 'status' } });
+        authed({ tags: { endpoint: 'status' } }, false));
 
     check(response, {
         'status 200': (r) => r.status === 200,
@@ -273,7 +315,7 @@ export function readHistory(data) {
     const shipment = randomShipment(data.shipments);
 
     const response = http.get(`${BASE_URL}/api/shipments/${shipment.id}/events?page=0&size=50`,
-        { tags: { endpoint: 'history' } });
+        authed({ tags: { endpoint: 'history' } }, false));
 
     check(response, {
         'history 200': (r) => r.status === 200,
