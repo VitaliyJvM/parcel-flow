@@ -36,6 +36,8 @@ class CarrierEventScriptTest {
         List<String> pacifica = CarrierEventScript.PACIFICA.steps().stream()
                 .map(CarrierEventScript.Step::carrierEventType).toList();
 
+        assertThat(swiftPost).isNotEmpty();
+        assertThat(pacifica).isNotEmpty();
         assertThat(swiftPost).doesNotContainAnyElementsOf(pacifica);
     }
 
